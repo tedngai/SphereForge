@@ -104,6 +104,24 @@ src/sphereforge/
 - Commit messages: `feat(stage02): implement camera intrinsics computation`
 - One PR per task — keep them small and reviewable
 
+### GitHub Authentication
+
+The GitHub Personal Access Token is stored in `.env` as `GITHUB_PAT`. When git push prompts for credentials, use the token from `.env` to authenticate:
+
+```bash
+# Read the token and push
+GITHUB_PAT=$(grep GITHUB_PAT .env | cut -d= -f2)
+git push https://${GITHUB_PAT}@github.com/tedngai/SphereForge.git main
+```
+
+Alternatively, set the remote URL once with the token embedded so future pushes work automatically:
+
+```bash
+git remote set-url origin https://<token-from-.env>@github.com/tedngai/SphereForge.git
+```
+
+Never commit the `.env` file — it is already in `.gitignore`.
+
 ## Task Dependency Rules
 
 - **Never start a task whose dependencies are not DONE.** Check `PROGRESS.md`.
