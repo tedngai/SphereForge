@@ -21,6 +21,12 @@ Public API:
     - ``distill_inpaint`` — Pseudo-view distillation.
     - ``fill_holes_iterative`` — Iterative fill loop.
     - ``omniroam_fill`` — OmniRoam stub (license-gated).
+
+Import conventions:
+    Heavy optional dependencies (diffusers, lpips, gsplat, torch for SD)
+    are imported inside function bodies so that Stage 7 modules can be
+    imported without installing every backend.  This pattern is used
+    consistently across all submodules.
 """
 
 from __future__ import annotations

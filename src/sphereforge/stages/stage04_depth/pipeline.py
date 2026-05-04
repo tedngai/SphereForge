@@ -7,6 +7,7 @@ optional RPG360 anchor refinement for each frame in the dataset.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -21,12 +22,83 @@ from sphereforge.stages.stage04_depth.scene_analysis import analyze_depth_scene
 logger = logging.getLogger("sphereforge.stage04.pipeline")
 
 
+def _process_single_frame_stage04(
+    frame_path: Path,
+    frame_idx: int,
+    config: Stage04Config,
+    sparse_model: dict,
+    output_dir: Path,
+    rpg360_anchor: np.ndarray | None,
+) -> tuple[Path, np.ndarray, float, float]:
+    """Process a single frame: depth estimation + alignment + write.
+
+    Creates its own depth estimator to avoid thread-safety issues.
+
+    Returns:
+        (depth_path, aligned_depth, scale, shift)
+    """
+    frame_name = frame_path.stem + frame_path.suffix
+    logger.info("Processing frame %d: %s", frame_idx + 1, frame_name)
+
+    image = read_image(frame_path)
+
+    # Create estimator locally for thread safety
+    estimator_kwargs: dict = {}
+    if config.depth_model == "rpg360":
+        estimator_kwargs["rpg360_perspective_model"] = config.rpg360_perspective_model
+    depth_estimator = get_depth_estimator(config.depth_model, **estimator_kwargs)
+
+    try:
+        raw_depth = depth_estimator.estimate_depth(image)
+    except NotImplementedError as exc:
+        raise RuntimeError(
+            f"Depth estimation failed for frame '{frame_name}': {exc}. "
+            f"The selected model ('{config.depth_model}') is not fully implemented "
+            f"or its weights are missing. Choose a working model in the config "
+            f"(e.g., depth_model='depth_anything_v2') and ensure dependencies "
+            f"are installed (pip install 'sphereforge[depth]')."
+        ) from exc
+
+    image_name_for_model = frame_path.name
+    try:
+        aligned_depth, scale, shift = align_depth_to_colmap(
+            depth_map=raw_depth,
+            sparse_model=sparse_model,
+            image_name=image_name_for_model,
+            rpg360_anchor=rpg360_anchor if frame_idx == 0 else None,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        logger.warning(
+            "COLMAP alignment failed for '%s': %s. Using unaligned depth.",
+            frame_name,
+            exc,
+        )
+        aligned_depth = raw_depth.astype(np.float32)
+        scale = 1.0
+        shift = 0.0
+
+    depth_path = output_dir / f"{frame_path.stem}_depth.npy"
+    write_depth(depth_path, aligned_depth)
+
+    logger.debug(
+        "Frame '%s': depth range [%.2f, %.2f], scale=%.4f, shift=%.4f",
+        frame_name,
+        float(np.min(aligned_depth[aligned_depth > 0])) if np.any(aligned_depth > 0) else 0.0,
+        float(np.max(aligned_depth)),
+        scale,
+        shift,
+    )
+
+    return depth_path, aligned_depth, scale, shift
+
+
 def run_stage04(
     config: Stage04Config,
     frame_paths: list[Path],
     cubemap_dir: Path,
     sparse_model: dict,
     output_dir: Path,
+    num_workers: int = 1,
 ) -> dict:
     """Run Stage 4: Dense Depth Estimation.
 
@@ -66,94 +138,45 @@ def run_stage04(
     """
     logger.info(
         "Starting Stage 4: depth_model=%s, scale_alignment=%s, "
-        "%d frames",
+        "%d frames, workers=%d",
         config.depth_model,
         config.scale_alignment,
         len(frame_paths),
+        num_workers,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Create depth estimator
-    estimator_kwargs: dict = {}
-    if config.depth_model == "rpg360":
-        estimator_kwargs["rpg360_perspective_model"] = config.rpg360_perspective_model
-    depth_estimator = get_depth_estimator(config.depth_model, **estimator_kwargs)
-
-    depth_paths: list[Path] = []
-    first_aligned_depth: np.ndarray | None = None
+    # Pre-compute RPG360 anchor if needed
     rpg360_anchor: np.ndarray | None = None
-
-    # Determine if RPG360 anchor should be used
     use_rpg360_anchor = (
         config.scale_alignment == "median_ratio_with_rpg360_anchor"
     )
-
-    # Pre-compute RPG360 anchor if needed
     if use_rpg360_anchor and config.depth_model == "panda":
         rpg360_anchor = _compute_rpg360_anchor(
             cubemap_dir, sparse_model, output_dir, config
         )
 
-    # Step 2: Process each frame
-    for i, frame_path in enumerate(frame_paths):
-        frame_name = frame_path.stem + frame_path.suffix
-        logger.info(
-            "Processing frame %d/%d: %s", i + 1, len(frame_paths), frame_name
-        )
-
-        # Load ERP image
-        image = read_image(frame_path)
-
-        # Estimate depth
-        try:
-            raw_depth = depth_estimator.estimate_depth(image)
-        except NotImplementedError as exc:
-            logger.warning(
-                "Depth estimation failed for frame '%s': %s. "
-                "Writing zero depth map as fallback.",
-                frame_name,
-                exc,
+    # Step 2: Process each frame (serial or threaded)
+    if num_workers > 1:
+        logger.info("Using %d threads for depth estimation", num_workers)
+        args = [
+            (fp, idx, config, sparse_model, output_dir, rpg360_anchor)
+            for idx, fp in enumerate(frame_paths)
+        ]
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            results = list(executor.map(_process_single_frame_stage04_worker, args))
+    else:
+        results = []
+        for idx, fp in enumerate(frame_paths):
+            results.append(
+                _process_single_frame_stage04(
+                    fp, idx, config, sparse_model, output_dir, rpg360_anchor
+                )
             )
-            raw_depth = np.zeros(image.shape[:2], dtype=np.float32)
 
-        # Align to COLMAP metric scale
-        image_name_for_model = frame_path.name
-        try:
-            aligned_depth, scale, shift = align_depth_to_colmap(
-                depth_map=raw_depth,
-                sparse_model=sparse_model,
-                image_name=image_name_for_model,
-                rpg360_anchor=rpg360_anchor if i == 0 else None,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            logger.warning(
-                "COLMAP alignment failed for '%s': %s. "
-                "Using unaligned depth.",
-                frame_name,
-                exc,
-            )
-            aligned_depth = raw_depth.astype(np.float32)
-            scale = 1.0
-            shift = 0.0
-
-        # Write depth map
-        depth_path = output_dir / f"{frame_path.stem}_depth.npy"
-        write_depth(depth_path, aligned_depth)
-        depth_paths.append(depth_path)
-
-        logger.debug(
-            "Frame '%s': depth range [%.2f, %.2f], scale=%.4f, shift=%.4f",
-            frame_name,
-            float(np.min(aligned_depth[aligned_depth > 0])) if np.any(aligned_depth > 0) else 0.0,
-            float(np.max(aligned_depth)),
-            scale,
-            shift,
-        )
-
-        # Save first frame's depth for scene analysis
-        if i == 0:
-            first_aligned_depth = aligned_depth
+    depth_paths = [r[0] for r in results]
+    first_aligned_depth = results[0][1] if results else None
 
     # Step 3: Run scene analysis on first frame
     scene_params: dict = {}
@@ -166,7 +189,6 @@ def run_stage04(
             scene_params = {}
 
     # Step 4: If RPG360 anchor available, refine remaining frames
-    # (first frame already refined during alignment)
     if rpg360_anchor is not None and len(frame_paths) > 1:
         _refine_remaining_frames(
             depth_paths, rpg360_anchor, output_dir, frame_paths
@@ -381,3 +403,13 @@ def _resolve_clip_value(
             scene_value,
         )
         return scene_value
+
+
+def _process_single_frame_stage04_worker(
+    args: tuple[Path, int, Stage04Config, dict, Path, np.ndarray | None],
+) -> tuple[Path, np.ndarray, float, float]:
+    """Picklable wrapper for ``_process_single_frame_stage04``."""
+    frame_path, frame_idx, config, sparse_model, output_dir, rpg360_anchor = args
+    return _process_single_frame_stage04(
+        frame_path, frame_idx, config, sparse_model, output_dir, rpg360_anchor
+    )

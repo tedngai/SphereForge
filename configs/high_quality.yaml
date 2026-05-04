@@ -1,0 +1,96 @@
+# SphereForge high-quality configuration
+# Maximum settings for best visual quality. Expect longer runtimes and
+# larger output files.
+
+data_dir: data
+model_cache_dir: ~/.cache/sphereforge/models
+log_level: INFO
+
+stage01:
+  input_fps: 10
+  chunk_size: 15
+  min_luminance: 5.0
+  max_luminance: 250.0
+
+stage02:
+  n_faces: 6
+  fov: 90
+  overlap: 20
+  yaw_offset_step: 15
+  crop_resolution: 2048
+  generate_masks: true
+  mask_classes: ["person", "vehicle"]
+  overexposure_threshold: 245
+  rpg360_depth_model: metric3d_v2
+  rpg360_graph_optimize: true
+  rpg360_fallback: median_ratio
+
+stage03:
+  feature_type: root_sift
+  matcher_type: exhaustive
+  refine_intrinsics: false
+  dense_reconstruction: true
+
+stage04:
+  depth_model: dap
+  scale_alignment: median_ratio_with_rpg360_anchor
+  sky_threshold: auto
+  depth_min: auto
+  depth_max: auto
+  rpg360_perspective_model: depth_anything_v2
+
+stage05:
+  stride: 1
+  stride_low_confidence: 2
+  grazing_angle: 60
+  outlier_pruning: 0.4
+  sparse_pruning: 0.4
+  sky_threshold: auto
+  dedup_distance: auto
+  ncc_confidence_threshold: 0.6
+  cross_validate_depth: true
+
+stage06:
+  iterations: 60000
+  densify_until_iter: 30000
+  densify_every: 500
+  prune_every: 3000
+  l1_weight: 0.8
+  ssim_weight: 0.2
+  sh_degree: 3
+  densification: igs_plus
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.02
+  erp_omnidirectional_neighbors: true
+  depth_reg_weight: 0.3
+  d_normal_weight: 0.08
+  use_intersection_depth: true
+  cdc_gs_enabled: false
+  cdc_gs_wavelet: db2
+
+stage07:
+  refine_backend: sharegs_gsdiff
+  refine_cameras: 72
+  refine_hole_threshold: 0.01
+  sharegs_enabled: true
+  sharegs_homogenization: true
+  sharegs_patch_reuse: true
+  sharegs_optimize_iters: 1000
+  gsdiff_backend: sd
+  gsdiff_prompt: "clean indoor scene, high quality, detailed"
+  gsdiff_lpips_threshold: 0.35
+  gsdiff_softmax_depth: true
+  gsdiff_depth_prior: marigold
+  refine_rounds: 3
+  trajectory_mode: auto
+  tier2_weight: 0.20
+  upscale: seedvr2
+
+stage08:
+  min_opacity: 0.005
+  max_scale: auto
+  rap_final_pass: true
+  compact_box_culling: true
+  compact_box_sigma: 3.0
+  export_format: ["ply", "sog", "spz", "html"]
+  extract_mesh: true

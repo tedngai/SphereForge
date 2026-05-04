@@ -139,6 +139,11 @@ class Stage06Config(BaseModel):
     cdc_gs_enabled: bool = Field(default=False, description="Enable complexity-density prior")
     cdc_gs_wavelet: str = Field(default="db2", description="Daubechies-2 wavelet")
 
+    # Checkpointing
+    checkpoint_every: int = Field(
+        default=5000, description="Save intermediate .ply every N iterations (0 = disabled)"
+    )
+
 
 class Stage07Config(BaseModel):
     """Stage 7: Occlusion Recovery & Refinement."""
@@ -205,6 +210,11 @@ class SphereForgeConfig(BaseModel):
         description="Model weight cache directory",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
+    num_workers: int = Field(
+        default=1,
+        description="Parallel workers for CPU-bound stages (1 = serial). "
+        "Stages 2, 4, 5 use this when > 1.",
+    )
 
     stage01: Stage01Config = Field(default_factory=Stage01Config)
     stage02: Stage02Config = Field(default_factory=Stage02Config)

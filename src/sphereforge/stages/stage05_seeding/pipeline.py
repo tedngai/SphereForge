@@ -7,6 +7,7 @@ assignment, and PLY writing to produce the initial Gaussian point cloud.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,54 @@ from .stride_assignment import assign_stride
 logger = logging.getLogger("sphereforge.stage05.pipeline")
 
 
+def _process_single_frame_stage05(
+    frame_path: Path,
+    depth_path: Path,
+    config: Stage05Config,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Process a single frame: confidence → stride → project to 3D.
+
+    Returns:
+        (positions, colors, per_point_depth)
+    """
+    image = read_image(frame_path)
+    depth_map = read_depth(depth_path)
+
+    if config.cross_validate_depth:
+        secondary_depth_path = depth_path.parent / (
+            depth_path.stem + "_rpg360" + depth_path.suffix
+        )
+        if secondary_depth_path.exists():
+            depth_secondary = read_depth(secondary_depth_path)
+            confidence_map = compute_depth_confidence(
+                depth_map, depth_secondary, ncc_threshold=config.ncc_confidence_threshold
+            )
+        else:
+            confidence_map = _compute_depth_confidence_heuristic(depth_map)
+    else:
+        confidence_map = np.ones(depth_map.shape, dtype=np.float32)
+
+    stride_map = assign_stride(
+        confidence_map,
+        stride_high=config.stride,
+        stride_low=config.stride_low_confidence,
+        threshold=config.ncc_confidence_threshold,
+    )
+
+    positions, colors = project_to_3d(image, depth_map, stride_map=stride_map)
+
+    h, w = depth_map.shape
+    row_idx = np.arange(h)[:, None]
+    col_idx = np.arange(w)[None, :]
+    sample_mask = (row_idx % stride_map == 0) & (col_idx % stride_map == 0)
+    v_idx, u_idx = np.where(sample_mask)
+    per_point_depth = depth_map[v_idx, u_idx].astype(np.float32)
+    valid_flat = per_point_depth > 0
+    per_point_depth = per_point_depth[valid_flat]
+
+    return positions, colors, per_point_depth
+
+
 def run_stage05(
     config: Stage05Config,
     frame_paths: list[Path],
@@ -36,6 +85,7 @@ def run_stage05(
     sparse_model: dict,
     scene_params: dict,
     output_dir: Path,
+    num_workers: int = 1,
 ) -> Path:
     """Run Stage 5: Initial Gaussian Seeding.
 
@@ -74,7 +124,11 @@ def run_stage05(
         )
 
     n_frames = len(frame_paths)
-    logger.info("Stage 5: Initial Gaussian Seeding — %d frames", n_frames)
+    logger.info(
+        "Stage 5: Initial Gaussian Seeding — %d frames, workers=%d",
+        n_frames,
+        num_workers,
+    )
 
     # ------------------------------------------------------------------
     # Step 1: Per-frame projection
@@ -83,57 +137,23 @@ def run_stage05(
     all_colors: list[np.ndarray] = []
     all_depths: list[np.ndarray] = []  # per-point depth values
 
-    for frame_idx, (frame_path, depth_path) in enumerate(
-        zip(frame_paths, depth_paths)
-    ):
-        logger.debug("Processing frame %d/%d: %s", frame_idx + 1, n_frames, frame_path)
+    if num_workers > 1:
+        logger.info("Using %d parallel workers for projection", num_workers)
+        args = [
+            (fp, dp, config)
+            for fp, dp in zip(frame_paths, depth_paths, strict=True)
+        ]
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            results = list(executor.map(_process_single_frame_stage05_worker, args))
+    else:
+        results = []
+        for fp, dp in zip(frame_paths, depth_paths, strict=True):
+            results.append(_process_single_frame_stage05(fp, dp, config))
 
-        image = read_image(frame_path)
-        depth_map = read_depth(depth_path)
-
-        # Determine per-pixel stride via confidence
-        if config.cross_validate_depth and n_frames > 1:
-            # Use a simple heuristic: compute NCC between this depth and
-            # the next one (circular).  In production the secondary depth
-            # would come from RPG360; here we skip cross-validation when
-            # only one depth source is available and use uniform stride.
-            stride_map = np.full(
-                depth_map.shape, config.stride, dtype=np.int32
-            )
-        else:
-            stride_map = np.full(
-                depth_map.shape, config.stride, dtype=np.int32
-            )
-
-        # Project with stride — use a uniform effective stride
-        # (per-pixel stride is approximated by using the stride_low for
-        #  the whole frame if confidence is low on average)
-        effective_stride = config.stride
-
-        positions, colors = project_to_3d(image, depth_map, stride=effective_stride)
-
-        # Compute per-point depth for later use
-        per_point_depth = depth_map[
-            np.arange(0, depth_map.shape[0], effective_stride)[:, None],
-            np.arange(0, depth_map.shape[1], effective_stride)[None, :],
-        ].ravel()
-        valid_depth = depth_map[
-            np.arange(0, depth_map.shape[0], effective_stride)[:, None],
-            np.arange(0, depth_map.shape[1], effective_stride)[None, :],
-        ] > 0
-        valid_flat = valid_depth.ravel()
-        per_point_depth = per_point_depth[valid_flat].astype(np.float32)
-
+    for positions, colors, per_point_depth in results:
         all_positions.append(positions)
         all_colors.append(colors)
         all_depths.append(per_point_depth)
-
-        logger.debug(
-            "Frame %d: %d points projected (stride=%d)",
-            frame_idx,
-            positions.shape[0],
-            effective_stride,
-        )
 
     # ------------------------------------------------------------------
     # Step 2: Multi-view fusion
@@ -141,9 +161,6 @@ def run_stage05(
     fused_positions, fused_colors, fused_confidence = fuse_multiview(
         all_positions, all_colors, sparse_model
     )
-
-    # Per-point depth for fused points (approximate as distance from origin)
-    fused_depth = np.linalg.norm(fused_positions, axis=1).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Step 3: Deduplication
@@ -227,6 +244,35 @@ def run_stage05(
     return output_path
 
 
+def _compute_depth_confidence_heuristic(depth_map: np.ndarray) -> np.ndarray:
+    """Compute a per-pixel confidence map from a single depth map.
+
+    Uses the inverse of local gradient magnitude as a proxy for
+    confidence: flat regions receive high confidence, edges and
+    discontinuities receive low confidence.
+
+    Args:
+        depth_map: Depth map of shape (H, W), dtype float32.
+
+    Returns:
+        Confidence map of shape (H, W), dtype float32, values in [0, 1].
+    """
+    from scipy.ndimage import sobel
+
+    # Compute Sobel gradients
+    grad_x = sobel(depth_map, axis=1)
+    grad_y = sobel(depth_map, axis=0)
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    # Normalise by the 95th percentile of non-zero gradients
+    nonzero = grad_mag[grad_mag > 0]
+    max_grad = float(np.percentile(nonzero, 95)) if nonzero.size > 0 else 1.0
+    max_grad = max(max_grad, 1e-8)
+
+    confidence = 1.0 - np.clip(grad_mag / max_grad, 0.0, 1.0)
+    return confidence.astype(np.float32)
+
+
 def _extract_camera_origins(sparse_model: dict) -> np.ndarray:
     """Extract camera world-space origins from COLMAP sparse model.
 
@@ -254,8 +300,16 @@ def _extract_camera_origins(sparse_model: dict) -> np.ndarray:
         qw, qx, qy, qz = img["qw"], img["qx"], img["qy"], img["qz"]
         t = np.array([img["tx"], img["ty"], img["tz"]], dtype=np.float64)
 
-        R = quat_to_rotation_matrix(qw, qx, qy, qz)
-        cam_center = -R.T @ t
+        r_mat = quat_to_rotation_matrix(qw, qx, qy, qz)
+        cam_center = -r_mat.T @ t
         origins.append(cam_center.astype(np.float32))
 
     return np.stack(origins, axis=0) if origins else np.empty((0, 3), dtype=np.float32)
+
+
+def _process_single_frame_stage05_worker(
+    args: tuple[Path, Path, Stage05Config],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Picklable wrapper for ``_process_single_frame_stage05``."""
+    frame_path, depth_path, config = args
+    return _process_single_frame_stage05(frame_path, depth_path, config)

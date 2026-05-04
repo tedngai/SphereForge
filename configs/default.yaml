@@ -1,0 +1,95 @@
+# SphereForge default configuration
+# Sane defaults for general indoor/outdoor 360° scenes.
+
+data_dir: data
+model_cache_dir: ~/.cache/sphereforge/models
+log_level: INFO
+
+stage01:
+  input_fps: 5
+  chunk_size: 30
+  min_luminance: 10.0
+  max_luminance: 245.0
+
+stage02:
+  n_faces: 6
+  fov: 90
+  overlap: 15
+  yaw_offset_step: 30
+  crop_resolution: 1024
+  generate_masks: true
+  mask_classes: ["person", "vehicle"]
+  overexposure_threshold: 250
+  rpg360_depth_model: metric3d_v2
+  rpg360_graph_optimize: true
+  rpg360_fallback: median_ratio
+
+stage03:
+  feature_type: root_sift
+  matcher_type: sequential+vocabulary_tree
+  refine_intrinsics: false
+  dense_reconstruction: true
+
+stage04:
+  depth_model: dap
+  scale_alignment: median_ratio_with_rpg360_anchor
+  sky_threshold: auto
+  depth_min: auto
+  depth_max: auto
+  rpg360_perspective_model: depth_anything_v2
+
+stage05:
+  stride: 1
+  stride_low_confidence: 4
+  grazing_angle: 65
+  outlier_pruning: 0.3
+  sparse_pruning: 0.3
+  sky_threshold: auto
+  dedup_distance: auto
+  ncc_confidence_threshold: 0.5
+  cross_validate_depth: true
+
+stage06:
+  iterations: 30000
+  densify_until_iter: 15000
+  densify_every: 500
+  prune_every: 3000
+  l1_weight: 0.8
+  ssim_weight: 0.2
+  sh_degree: 3
+  densification: igs_plus
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.01
+  erp_omnidirectional_neighbors: true
+  depth_reg_weight: 0.2
+  d_normal_weight: 0.05
+  use_intersection_depth: true
+  cdc_gs_enabled: false
+  cdc_gs_wavelet: db2
+
+stage07:
+  refine_backend: sharegs_gsdiff
+  refine_cameras: 36
+  refine_hole_threshold: 0.02
+  sharegs_enabled: true
+  sharegs_homogenization: true
+  sharegs_patch_reuse: true
+  sharegs_optimize_iters: 500
+  gsdiff_backend: sd
+  gsdiff_prompt: "clean indoor scene, high quality, detailed"
+  gsdiff_lpips_threshold: 0.4
+  gsdiff_softmax_depth: true
+  gsdiff_depth_prior: marigold
+  refine_rounds: 2
+  trajectory_mode: auto
+  tier2_weight: 0.20
+  upscale: seedvr2
+
+stage08:
+  min_opacity: 0.005
+  max_scale: auto
+  rap_final_pass: true
+  compact_box_culling: true
+  compact_box_sigma: 3.0
+  export_format: ["ply", "sog"]
+  extract_mesh: false

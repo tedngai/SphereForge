@@ -17,6 +17,7 @@ def project_to_3d(
     image: np.ndarray,
     depth_map: np.ndarray,
     stride: int = 1,
+    stride_map: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Project an equirectangular image and depth map to 3D point positions.
 
@@ -32,12 +33,20 @@ def project_to_3d(
 
     and the 3-D position is ``depth[v, u] * d``.
 
+    When *stride_map* is provided, it overrides the uniform *stride*.
+    Each pixel is sampled if both its row and column indices are
+    divisible by the per-pixel stride value in the map.  This allows
+    dense seeding (stride=1) in high-confidence regions and sparse
+    seeding (stride>1) in low-confidence regions.
+
     Args:
         image: ERP image of shape (H, W, 3) with dtype uint8.
         depth_map: Depth map of shape (H, W) with dtype float32.
         stride: Sampling stride — only every *stride*-th pixel in both
             dimensions is projected.  A stride of 1 produces a point per
             pixel; stride > 1 subsamples for faster processing.
+        stride_map: Optional per-pixel stride map of shape (H, W) with
+            dtype int.  If given, takes precedence over *stride*.
 
     Returns:
         A tuple ``(positions, colors)`` where:
@@ -58,17 +67,46 @@ def project_to_3d(
             f"image and depth_map spatial dims must match: "
             f"{image.shape[:2]} vs {depth_map.shape}"
         )
+    if stride_map is not None and stride_map.shape != depth_map.shape:
+        raise ValueError(
+            f"stride_map shape must match depth_map shape: "
+            f"{stride_map.shape} vs {depth_map.shape}"
+        )
 
     h, w = depth_map.shape
 
-    # Sampled pixel coordinates
-    v_idx = np.arange(0, h, stride, dtype=np.float64)
-    u_idx = np.arange(0, w, stride, dtype=np.float64)
-    uu, vv = np.meshgrid(u_idx, v_idx)  # (rows, cols)
+    if stride_map is not None:
+        # Per-pixel stride: sample pixel (v, u) iff v % stride_map[v,u] == 0
+        # and u % stride_map[v,u] == 0.  Vectorised via broadcasting.
+        row_idx = np.arange(h)[:, None]
+        col_idx = np.arange(w)[None, :]
+        sample_mask = (row_idx % stride_map == 0) & (col_idx % stride_map == 0)
+        v_idx, u_idx = np.where(sample_mask)
 
-    # Spherical coordinates
-    phi = np.pi * vv / h  # latitude [0, pi]
-    theta = 2.0 * np.pi * uu / w  # longitude [0, 2*pi)
+        # Spherical coordinates for sampled pixels
+        phi = np.pi * v_idx / h  # latitude [0, pi]
+        theta = 2.0 * np.pi * u_idx / w  # longitude [0, 2*pi)
+
+        # Sample depth and image
+        depth_samples = depth_map[v_idx, u_idx]
+        image_samples = image[v_idx, u_idx]
+
+        n_sampled = int(v_idx.shape[0])
+    else:
+        # Uniform stride — direct slicing is faster than np.ix_()
+        v_idx = np.arange(0, h, stride, dtype=np.float64)
+        u_idx = np.arange(0, w, stride, dtype=np.float64)
+        uu, vv = np.meshgrid(u_idx, v_idx)  # (rows, cols)
+
+        # Spherical coordinates
+        phi = np.pi * vv / h  # latitude [0, pi]
+        theta = 2.0 * np.pi * uu / w  # longitude [0, 2*pi)
+
+        # Sample depth and image via direct stride slicing
+        depth_samples = depth_map[::stride, ::stride]  # (rows, cols)
+        image_samples = image[::stride, ::stride]  # (rows, cols, 3)
+
+        n_sampled = depth_samples.size
 
     # Ray directions (y-up)
     sin_phi = np.sin(phi)
@@ -80,12 +118,6 @@ def project_to_3d(
     dy = cos_phi
     dz = sin_phi * sin_theta
 
-    # Sample depth and image at stride positions
-    v_int = v_idx.astype(int)
-    u_int = u_idx.astype(int)
-    depth_samples = depth_map[np.ix_(v_int, u_int)]  # (rows, cols)
-    image_samples = image[np.ix_(v_int, u_int)]  # (rows, cols, 3)
-
     # Valid mask: depth > 0
     valid = depth_samples > 0
 
@@ -95,8 +127,8 @@ def project_to_3d(
     pos_z = depth_samples * dz
 
     # Stack and filter
-    positions = np.stack([pos_x, pos_y, pos_z], axis=-1)  # (rows, cols, 3)
-    colors_raw = image_samples  # (rows, cols, 3)
+    positions = np.stack([pos_x, pos_y, pos_z], axis=-1)
+    colors_raw = image_samples
 
     # Flatten and filter by valid depth
     positions_flat = positions.reshape(-1, 3)
@@ -107,12 +139,14 @@ def project_to_3d(
     colors_out = colors_flat[valid_flat].astype(np.uint8)
 
     logger.debug(
-        "project_to_3d: stride=%d, %d/%d valid points from %dx%d image",
-        stride,
+        "project_to_3d: %d/%d valid points from %dx%d image "
+        "(stride=%s, stride_map=%s)",
         positions_out.shape[0],
-        valid_flat.shape[0],
+        n_sampled,
         h,
         w,
+        stride if stride_map is None else "map",
+        "yes" if stride_map is not None else "no",
     )
 
     return positions_out, colors_out

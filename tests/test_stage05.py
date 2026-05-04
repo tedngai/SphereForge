@@ -13,18 +13,17 @@ import numpy as np
 import pytest
 
 from sphereforge.stages.stage05_seeding import (
-    project_to_3d,
-    fuse_multiview,
-    deduplicate_gaussians,
+    assign_initial_attributes,
+    assign_stride,
     clip_grazing_angles,
+    compute_depth_confidence,
+    deduplicate_gaussians,
+    fuse_multiview,
+    project_to_3d,
     prune_outliers,
     prune_sparse_regions,
     remove_sky,
-    compute_depth_confidence,
-    assign_stride,
-    assign_initial_attributes,
 )
-
 
 # ==========================================================================
 # T5.1 — Spherical projection
@@ -113,6 +112,31 @@ class TestProjectTo3D:
         np.testing.assert_array_equal(colors[:, 0], 100)
         np.testing.assert_array_equal(colors[:, 1], 150)
         np.testing.assert_array_equal(colors[:, 2], 200)
+
+    def test_stride_map_mixed_sampling(self) -> None:
+        """Per-pixel stride_map should mix dense and sparse sampling."""
+        h, w = 4, 8
+        depth = np.ones((h, w), dtype=np.float32)
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Left half dense (stride=1), right half sparse (stride=2)
+        stride_map = np.ones((h, w), dtype=np.int32)
+        stride_map[:, w // 2 :] = 2
+
+        positions, _ = project_to_3d(image, depth, stride_map=stride_map)
+
+        # Dense half: 4*4 = 16 pixels, sparse half: 2*2 = 4 pixels → 20 total
+        # (stride=2 keeps every 2nd row AND every 2nd col in that half)
+        assert positions.shape[0] == 20
+
+    def test_stride_map_shape_mismatch_raises(self) -> None:
+        """Mismatched stride_map shape should raise ValueError."""
+        depth = np.ones((4, 8), dtype=np.float32)
+        image = np.zeros((4, 8, 3), dtype=np.uint8)
+        stride_map = np.ones((4, 4), dtype=np.int32)
+
+        with pytest.raises(ValueError):
+            project_to_3d(image, depth, stride_map=stride_map)
 
 
 # ==========================================================================
@@ -563,9 +587,9 @@ class TestPipeline:
         tmp_path: Path,
     ) -> None:
         """Pipeline should run on a single synthetic frame and produce PLY."""
+        from sphereforge.common.io import write_depth, write_image
         from sphereforge.config import Stage05Config
         from sphereforge.stages.stage05_seeding.pipeline import run_stage05
-        from sphereforge.common.io import write_depth, write_image
 
         config = Stage05Config(
             stride=2,
@@ -615,9 +639,9 @@ class TestPipeline:
         tmp_path: Path,
     ) -> None:
         """Pipeline should handle two frames and produce PLY."""
+        from sphereforge.common.io import write_depth, write_image
         from sphereforge.config import Stage05Config
         from sphereforge.stages.stage05_seeding.pipeline import run_stage05
-        from sphereforge.common.io import write_depth, write_image
 
         config = Stage05Config(
             stride=4,
@@ -676,9 +700,9 @@ class TestPipeline:
         tmp_path: Path,
     ) -> None:
         """Output PLY should be readable by the common I/O module."""
+        from sphereforge.common.io import read_ply, write_depth, write_image
         from sphereforge.config import Stage05Config
         from sphereforge.stages.stage05_seeding.pipeline import run_stage05
-        from sphereforge.common.io import read_ply, write_depth, write_image
 
         config = Stage05Config(
             stride=4,

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -30,15 +31,14 @@ from torch import Tensor
 from torch.optim import Adam
 
 from sphereforge.config import Stage06Config
+from sphereforge.stages.stage06_optimization.d_normal_loss import (
+    d_normal_loss,
+)
 from sphereforge.stages.stage06_optimization.densification import (
     clone_under_reconstructed,
     compute_eas,
     long_axis_split,
     should_densify,
-)
-from sphereforge.stages.stage06_optimization.d_normal_loss import (
-    compute_normals_from_depth,
-    d_normal_loss,
 )
 from sphereforge.stages.stage06_optimization.erp_loss import (
     erp_weighted_loss,
@@ -174,10 +174,10 @@ def render_gaussians(
             sh_degree=sh_degree,
         )
     else:
-        return _render_gaussians_stub(
-            means=means,
-            image_height=image_height,
-            image_width=image_width,
+        raise RuntimeError(
+            "gsplat is not installed — rendering requires a differentiable rasterizer. "
+            "Install with: pip install 'sphereforge[rasterizer]' "
+            "(or manually: pip install gsplat>=1.0)"
         )
 
 
@@ -381,6 +381,7 @@ def train_gaussians(
     training_views: list[dict[str, Any]],
     config: Stage06Config,
     device: str = "auto",
+    checkpoint_dir: Path | None = None,
 ) -> dict[str, Tensor]:
     """Train Gaussians via multi-view optimization.
 
@@ -404,6 +405,7 @@ def train_gaussians(
             width, target_image (3,H,W), target_depth (H,W), latitudes (H,W).
         config: Stage06 configuration.
         device: "auto", "cuda", or "cpu".
+        checkpoint_dir: Optional directory to save intermediate PLY checkpoints.
 
     Returns:
         Dict with final Gaussian attributes (same keys as initial_gaussians).
@@ -411,11 +413,11 @@ def train_gaussians(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if not _HAS_GSPLAT and device == "cpu":
-        logger.warning(
-            "gsplat is not installed and device is CPU — training with random "
-            "stub renderer will not produce meaningful results.  Install gsplat "
-            "with: pip install 'sphereforge[rasterizer]'"
+    if not _HAS_GSPLAT:
+        raise RuntimeError(
+            "gsplat is not installed — training requires a differentiable rasterizer. "
+            "Install with: pip install 'sphereforge[rasterizer]' "
+            "(or manually: pip install gsplat>=1.0)"
         )
 
     # Move initial Gaussians to device
@@ -462,20 +464,33 @@ def train_gaussians(
         _HAS_GSPLAT, current_sh_degree, target_sh_degree,
     )
 
+    # Pre-load view tensors to GPU once to avoid redundant .to() calls per iter
+    _gpu_views: list[dict[str, Any]] = []
+    for view in training_views:
+        gpu_view: dict[str, Any] = {
+            "viewmat": view["viewmat"].to(device),
+            "target_image": view["target_image"].to(device),
+            "target_depth": view["target_depth"].to(device),
+            "fov": view["fov"],
+            "height": view["height"],
+            "width": view["width"],
+        }
+        latitudes = view.get("latitudes", None)
+        if latitudes is not None:
+            gpu_view["latitudes"] = latitudes.to(device)
+        _gpu_views.append(gpu_view)
+
     start_time = time.time()
 
     for iteration in range(config.iterations):
         # Pick a random training view
-        view_idx = torch.randint(0, len(training_views), (1,)).item()
-        view = training_views[view_idx]
+        view_idx = torch.randint(0, len(_gpu_views), (1,)).item()
+        view = _gpu_views[view_idx]
 
-        # Move view data to device
-        viewmat = view["viewmat"].to(device)
-        target_image = view["target_image"].to(device)
-        target_depth = view["target_depth"].to(device)
+        viewmat = view["viewmat"]
+        target_image = view["target_image"]
+        target_depth = view["target_depth"]
         latitudes = view.get("latitudes", None)
-        if latitudes is not None:
-            latitudes = latitudes.to(device)
 
         # Normalize rotations (unit quaternions) — required by gsplat
         rotations_norm = rotations / (rotations.norm(dim=1, keepdim=True) + 1e-8)
@@ -661,6 +676,23 @@ def train_gaussians(
                     current_sh_degree, target_sh_degree, iteration,
                 )
 
+        # ---- Checkpointing ----
+        if (
+            checkpoint_dir is not None
+            and config.checkpoint_every > 0
+            and iteration > 0
+            and iteration % config.checkpoint_every == 0
+        ):
+            _save_checkpoint(
+                checkpoint_dir,
+                iteration,
+                positions,
+                colors,
+                opacities,
+                scales,
+                rotations,
+            )
+
         # ---- Logging ----
         if iteration % 100 == 0:
             with torch.no_grad():
@@ -692,6 +724,51 @@ def train_gaussians(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _save_checkpoint(
+    checkpoint_dir: Path,
+    iteration: int,
+    positions: Tensor,
+    colors: Tensor,
+    opacities: Tensor,
+    scales: Tensor,
+    rotations: Tensor,
+) -> None:
+    """Save an intermediate PLY checkpoint during training.
+
+    Args:
+        checkpoint_dir: Directory for checkpoint files.
+        iteration: Current training iteration.
+        positions: Gaussian positions (N, 3).
+        colors: SH coefficients (N, K).
+        opacities: Opacities (N,).
+        scales: Scales (N, 3).
+        rotations: Rotations (N, 4).
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    from sphereforge.common.io import write_ply
+
+    ckpt_path = checkpoint_dir / f"checkpoint_{iteration:06d}.ply"
+
+    # Convert tensors to numpy for PLY writing
+    colors_np = colors.detach().cpu().numpy()
+    if colors_np.max() > 1:
+        colors_np = colors_np.astype(np.uint8)
+    else:
+        colors_np = (colors_np * 255).astype(np.uint8)
+
+    write_ply(
+        ckpt_path,
+        positions=positions.detach().cpu().numpy(),
+        colors=colors_np,
+        opacities=opacities.detach().cpu().numpy(),
+        scales=scales.detach().cpu().numpy(),
+        rotations=rotations.detach().cpu().numpy(),
+    )
+    logger.info("Checkpoint saved: %s (%d Gaussians)", ckpt_path, positions.shape[0])
 
 
 def _get_screen_positions(

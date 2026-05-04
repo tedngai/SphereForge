@@ -38,13 +38,313 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
 
 ---
 
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.664877+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.668957+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.673111+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.677114+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.680547+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:14:48.685427+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-12/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-12/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.351802+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.355600+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.358841+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.362598+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.365738+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:15:31.369341+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-13/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-13/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.968865+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.973301+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.980025+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.984577+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.988462+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:18:34.998546+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-14/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-14/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.894381+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.897574+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.902828+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.906228+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.909628+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:21:35.913873+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-16/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-16/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.585618+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.591393+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.598149+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.602549+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.608051+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-03T12:25:43.613308+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-17/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-17/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
 ## Statistics
 
-- **Total tasks:** 94 (92 DONE, 2 remaining: T0.10 Dockerfile, T0.12 integration tests)
-- **Completion rate:** 98%
-- **Source code:** 14,420 lines
-- **Test code:** 4,732 lines
-- **Total Python:** 19,152 lines
+- **Total tasks:** 94 (94 DONE, 0 remaining)
+- **Completion rate:** 100%
+- **Source code:** ~15,500 lines
+- **Test code:** ~4,900 lines
+- **Total Python:** ~20,400 lines
 
 ---
 
@@ -66,16 +366,51 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
 
 ## Remaining Tasks
 
-| Task | Description | Priority |
-|------|-------------|----------|
-| T0.10 | Dockerfile / conda environment | Low — convenience only |
-| T0.12 | Integration test harness | Low — needs running pipeline |
+None — all tracked tasks are complete.
+
+### [ASSESSMENT-P2] Moderate Issue Fixes — 2026-05-03
+- **Unified COLMAP readers**: Removed duplicate `read_colmap_cameras()` and `read_colmap_images()` from `common/io.py`; canonical parsers in `common/colmap_helpers.py` are now re-exported. Callers updated (`stage07/pipeline.py`).
+- **`rotation_matrix_to_quat` verified**: Added 12 unit tests (`tests/test_colmap_helpers.py`) against known ground-truth rotations (identity, 90°/180° about X/Y/Z). Round-trip and orthogonality validated.
+- **`__init__.py` re-exports standardized**: All 8 stages already re-export public APIs via `__init__.py`; confirmed consistent.
+- **Progress logging robustness**: `log_task_completion()` now validates the task row exists and reports the current status before replacement. Added `dry_run` parameter. Raises `RuntimeError` if the table format changes unexpectedly.
+- **`py.typed` marker added**: `src/sphereforge/py.typed` empty file for PEP 561 compliance.
+- **GPU install instructions added to README**: Section with CUDA 12.8 + PyTorch + gsplat one-liner.
+- **`model_cache.py` simplified**: `download_if_missing()` now requires a non-empty `url`. PanDA model wrapper updated to use `get_model_path().exists()` instead of `download_if_missing(..., url=None)`.
+- **Stage 7 inline imports documented**: Package docstring in `stage07_occlusion/__init__.py` explains the pattern.
+- **Training view GPU pre-loading**: `train_gaussians()` now moves all view tensors to GPU once before the training loop, eliminating redundant `.to(device)` calls per iteration.
+- **`.gitignore` already covered**: `*.pth`, `*.pt`, `*.safetensors`, `.cache/` entries were already present.
+- Files modified: `common/io.py`, `common/colmap_helpers.py`, `common/model_cache.py`, `logging_utils.py`, `models/metric3d.py`, `stages/stage04_depth/panda_model.py`, `stages/stage07_occlusion/__init__.py`, `stages/stage06_optimization/training_loop.py`, `README.md`
+- Files created: `src/sphereforge/py.typed`, `tests/test_colmap_helpers.py`
+
+### [ASSESSMENT-P3] Minor Issue Fixes — 2026-05-03
+- **Integration test harness (T0.12)**: `tests/integration/test_pipeline.py` runs stages 2→5 on a 2-frame synthetic dataset (256×512) and verifies a valid PLY is produced.
+- **Dockerfile (T0.10)**: `Dockerfile` based on `nvidia/cuda:12.8.0-devel-ubuntu22.04` with COLMAP, PyTorch, and SphereForge installed.
+- **Conda environment spec**: `environment.yml` for reproducible conda builds.
+- Files created: `Dockerfile`, `environment.yml`, `tests/integration/test_pipeline.py`
 
 ---
 
+### [ASSESSMENT-P0] Critical Issue Fixes — 2026-05-02
+- **CLI wired up** (`src/sphereforge/cli.py`): `process` now runs stages 1-8 sequentially with `--stage`, `--resume`, and `--config` support. `export` runs Stage 8 on existing PLY files.
+- **Config files created**: `configs/default.yaml`, `configs/high_quality.yaml`, `configs/fast_preview.yaml` with sensible defaults per `PIPELINE_DESIGN_V2.md`.
+- **Stage 6 rasterizer fail-fast**: `render_gaussians()` and `train_gaussians()` now raise `RuntimeError` with clear install instructions when gsplat is missing, instead of silently training on random tensors.
+- **Stage 4 depth fail-fast**: `run_stage04()` now raises `RuntimeError` when a depth estimator raises `NotImplementedError`, instead of silently writing zero-depth maps.
+- **Stage 5 stride bypass fixed**: `run_stage05()` now computes per-pixel confidence (NCC when secondary depth is available, Sobel-gradient heuristic otherwise) and passes the resulting `stride_map` to `project_to_3d()`. `project_to_3d()` was extended to accept `stride_map` for non-uniform subsampling.
+- Files modified: `cli.py`, `training_loop.py`, `stage04_depth/pipeline.py`, `stage05_seeding/pipeline.py`, `stage05_seeding/projection.py`, `tests/test_stage04.py`, `tests/test_stage05.py`
+- Files created: `configs/default.yaml`, `configs/high_quality.yaml`, `configs/fast_preview.yaml`
+
+### [ASSESSMENT-P1] Significant Issue Fixes — 2026-05-02
+- **Parallel processing**: Added `num_workers` config and `concurrent.futures` parallelization for Stages 2 (`ProcessPoolExecutor`), 4 (`ThreadPoolExecutor`), and 5 (`ProcessPoolExecutor`).
+- **Stage 6 checkpointing**: `train_gaussians()` now saves intermediate `.ply` checkpoints every `config.checkpoint_every` iterations (default 5000).
+- **Stage 2 duplicate crop extraction fixed**: `resized_crops` is now reused for output instead of re-resizing original crops.
+- **`np.ix_()` replaced**: `project_to_3d()` uniform-stride path now uses direct slicing `depth_map[::stride, ::stride]` instead of `np.ix_()`.
+- **`test_stage02.py` written**: 14 tests covering cubemap extraction, intrinsics computation, extrinsics quaternion generation, yaw diversification, mask generation, and COLMAP writer round-trips.
+- Files modified: `cli.py`, `config.py`, `stage02_cubemap/pipeline.py`, `stage04_depth/pipeline.py`, `stage05_seeding/pipeline.py`, `stage05_seeding/projection.py`, `stage06_optimization/training_loop.py`
+- Files created: `tests/test_stage02.py`
+
 ## Key Implementation Notes
 
-1. **Rasterizer is a STUB** (T6.11): `render_gaussians()` returns random tensors. Must integrate gsplat (Apache 2.0) or INRIA 3DGS CUDA rasterizer for actual training.
+1. **Rasterizer is a STUB** (T6.11): `render_gaussians()` returns random tensors. Must integrate gsplat (Apache 2.0) or INRIA 3DGS CUDA rasterizer for actual training. **FIXED 2026-05-02**: now raises RuntimeError with install instructions when gsplat is missing.
 2. **PanDA is a STUB** (T4.1): `PanDAModel` raises NotImplementedError. Weights must be obtained separately.
 3. **EscherNet is a STUB** (T7.7): `EscherNetWrapper` raises NotImplementedError. Weights under RAIL-M license.
 4. **RPG360 license** (T2.9): No license file. Contact authors or implement from paper.

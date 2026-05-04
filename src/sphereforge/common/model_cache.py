@@ -42,7 +42,7 @@ def get_model_path(
 def download_if_missing(
     model_name: str,
     filename: str,
-    url: str | None = None,
+    url: str,
     cache_dir: Path | None = None,
     expected_sha256: str | None = None,
     force: bool = False,
@@ -54,8 +54,8 @@ def download_if_missing(
     Args:
         model_name: Name of the model (e.g. "panda", "metric3d_v2").
         filename: Specific weight file name.
-        url: Direct download URL. If None, attempts HuggingFace auto-detect
-            using the ``huggingface_hub`` package with repo_id=model_name.
+        url: Direct download URL or HuggingFace repo identifier.
+            Must be a non-empty string.
         cache_dir: Root cache directory.
         expected_sha256: Optional SHA-256 hex digest for integrity check.
         force: If True, re-download even if file exists.
@@ -64,9 +64,10 @@ def download_if_missing(
         Path to the cached weight file.
 
     Raises:
-        FileNotFoundError: If URL is None and huggingface_hub is not installed.
         RuntimeError: If download fails or integrity check fails.
     """
+    if not url:
+        raise ValueError("url must be a non-empty string")
     target = get_model_path(model_name, filename, cache_dir)
 
     if target.exists() and not force:

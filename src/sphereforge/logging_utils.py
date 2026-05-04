@@ -121,6 +121,7 @@ def log_task_completion(
     issues: str = "",
     progress_path: Path | None = None,
     tasks_path: Path | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Log a task completion to PROGRESS.md and update status in TASKS.md.
 
@@ -133,6 +134,9 @@ def log_task_completion(
         issues: Any problems encountered.
         progress_path: Path to PROGRESS.md (auto-detected if None).
         tasks_path: Path to TASKS.md (auto-detected if None).
+        dry_run: If True, validate that the replacement would succeed but
+            do not write any files. Raises ``RuntimeError`` if the task
+            row cannot be found or is already marked DONE.
     """
     project_dir = Path(__file__).parent.parent.parent
     if progress_path is None:
@@ -145,13 +149,36 @@ def log_task_completion(
     # Update TASKS.md status
     if tasks_path.exists():
         content = tasks_path.read_text(encoding="utf-8")
-        # Replace the status in the task row
-        pattern = rf"(\|\s*{re.escape(task_id)}\s*\|\s*)TODO(\s*\|)"
-        replacement = rf"\g<1>DONE\2"
-        if "DONE" not in content.split(task_id)[1].split("|")[1] if task_id in content else "":
+        # Validate that the task exists and is not already DONE
+        if task_id not in content:
+            raise RuntimeError(f"Task {task_id} not found in {tasks_path}")
+        # Find the row and current status using a more robust pattern
+        row_pattern = rf"\|\s*{re.escape(task_id)}\s*\|\s*(\w+)\s*\|"
+        row_match = re.search(row_pattern, content)
+        if not row_match:
+            raise RuntimeError(
+                f"Could not locate status cell for task {task_id} in {tasks_path}. "
+                "The table format may have changed."
+            )
+        current_status = row_match.group(1)
+        if current_status == "DONE":
+            if dry_run:
+                return  # Already done — nothing to validate
+            # Silently skip re-logging if already DONE
+        else:
+            pattern = rf"(\|\s*{re.escape(task_id)}\s*\|\s*){re.escape(current_status)}(\s*\|)"
+            replacement = rf"\g<1>DONE\2"
             new_content = re.sub(pattern, replacement, content)
-            if new_content != content:
+            if new_content == content:
+                raise RuntimeError(
+                    f"Failed to update status for {task_id} in {tasks_path}. "
+                    f"Current status '{current_status}' may not match the expected pattern."
+                )
+            if not dry_run:
                 tasks_path.write_text(new_content, encoding="utf-8")
+
+    if dry_run:
+        return
 
     # Append to PROGRESS.md
     entry_lines = [

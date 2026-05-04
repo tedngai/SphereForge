@@ -58,6 +58,9 @@ data/optimized/
 data/refined/
 data/export/
 
+# Pipeline test output
+test_output/
+
 # Large output files
 *.ply
 *.sog

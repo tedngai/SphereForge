@@ -1,0 +1,17 @@
+name: sphereforge
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch>=2.6
+  - torchvision
+  - pytorch-cuda=12.8
+  - numpy
+  - opencv
+  - pip
+  - ffmpeg
+  - pip:
+    - -e ".[all,dev]"

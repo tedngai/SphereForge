@@ -78,6 +78,21 @@ pip install -e ".[all]"
 pip install -e ".[dev]"
 ```
 
+### GPU Dependencies
+
+For full GPU-accelerated training and depth estimation:
+
+```bash
+# CUDA 12.8+ with PyTorch 2.6+
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# gsplat rasterizer (required for Stage 6 training)
+pip install gsplat>=1.0
+
+# One-line install for GPU stack
+pip install 'sphereforge[all]'
+```
+
 ### External Dependencies
 
 - **COLMAP**: Required for Stage 3 (SfM). Install from [colmap.github.io](https://colmap.github.io/)

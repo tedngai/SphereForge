@@ -427,12 +427,14 @@ class TestRunStage04:
     @patch("sphereforge.stages.stage04_depth.pipeline.align_depth_to_colmap")
     @patch("sphereforge.stages.stage04_depth.pipeline.get_depth_estimator")
     @patch("sphereforge.stages.stage04_depth.pipeline.log_task_completion")
+    @patch("sphereforge.stages.stage04_depth.pipeline.read_depth")
     @patch("sphereforge.stages.stage04_depth.pipeline.write_depth")
     @patch("sphereforge.stages.stage04_depth.pipeline.read_image")
     def test_pipeline_flow(
         self,
         mock_read_image: MagicMock,
         mock_write_depth: MagicMock,
+        mock_read_depth: MagicMock,
         mock_log_task: MagicMock,
         mock_get_estimator: MagicMock,
         mock_align: MagicMock,
@@ -455,6 +457,9 @@ class TestRunStage04:
 
         # Mock alignment
         mock_align.return_value = (fake_depth, 1.0, 0.0)
+
+        # Mock read_depth (used by clipping step)
+        mock_read_depth.return_value = fake_depth
 
         # Mock scene analysis
         mock_analyze.return_value = {
@@ -532,7 +537,7 @@ class TestRunStage04:
     @patch("sphereforge.stages.stage04_depth.pipeline.log_task_completion")
     @patch("sphereforge.stages.stage04_depth.pipeline.write_depth")
     @patch("sphereforge.stages.stage04_depth.pipeline.read_image")
-    def test_pipeline_fallback_on_not_implemented(
+    def test_pipeline_fail_fast_on_not_implemented(
         self,
         mock_read_image: MagicMock,
         mock_write_depth: MagicMock,
@@ -541,7 +546,7 @@ class TestRunStage04:
         mock_align: MagicMock,
         mock_analyze: MagicMock,
     ) -> None:
-        """Pipeline should write zero depth when estimator raises NotImplementedError."""
+        """Pipeline should raise RuntimeError when estimator raises NotImplementedError."""
         from sphereforge.config import Stage04Config
         from sphereforge.stages.stage04_depth.pipeline import run_stage04
 
@@ -571,24 +576,21 @@ class TestRunStage04:
 
             config = Stage04Config(depth_model="panda", scale_alignment="median_ratio")
 
-            result = run_stage04(
-                config=config,
-                frame_paths=[frame_path],
-                cubemap_dir=Path(tmpdir) / "cubemaps",
-                sparse_model={
-                    "cameras": {1: {"model": "PINHOLE", "width": w, "height": h, "params": [100, 100, 64, 32]}},
-                    "images": {
-                        1: {"name": "frame_000.png", "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0,
-                            "tx": 0.0, "ty": 0.0, "tz": 0.0, "camera_id": 1, "point3D_ids": [1]},
+            with pytest.raises(RuntimeError, match="Depth estimation failed"):
+                run_stage04(
+                    config=config,
+                    frame_paths=[frame_path],
+                    cubemap_dir=Path(tmpdir) / "cubemaps",
+                    sparse_model={
+                        "cameras": {1: {"model": "PINHOLE", "width": w, "height": h, "params": [100, 100, 64, 32]}},
+                        "images": {
+                            1: {"name": "frame_000.png", "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0,
+                                "tx": 0.0, "ty": 0.0, "tz": 0.0, "camera_id": 1, "point3D_ids": [1]},
+                        },
+                        "points3D": {1: {"x": 0.0, "y": 0.0, "z": 3.0}},
                     },
-                    "points3D": {1: {"x": 0.0, "y": 0.0, "z": 3.0}},
-                },
-                output_dir=Path(tmpdir) / "depth",
-            )
-
-            # Should still return results (fallback zero depth)
-            assert "depth_paths" in result
-            assert len(result["depth_paths"]) == 1
+                    output_dir=Path(tmpdir) / "depth",
+                )
 
 
 # ---------------------------------------------------------------------------

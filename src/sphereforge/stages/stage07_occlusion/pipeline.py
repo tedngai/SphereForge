@@ -192,15 +192,18 @@ def _load_colmap_model(colmap_dir: Path) -> dict:
         return model
 
     try:
-        from sphereforge.common.io import read_colmap_cameras, read_colmap_images
+        from sphereforge.common.colmap_helpers import (
+            parse_cameras_txt,
+            parse_images_txt,
+        )
 
         cameras_file = colmap_dir / "cameras.txt"
         images_file = colmap_dir / "images.txt"
 
         if cameras_file.exists():
-            model["cameras"] = read_colmap_cameras(cameras_file)
+            model["cameras"] = parse_cameras_txt(cameras_file)
         if images_file.exists():
-            model["images"] = read_colmap_images(images_file)
+            model["images"] = parse_images_txt(images_file)
     except Exception as exc:
         logger.warning("Failed to load COLMAP model from %s: %s", colmap_dir, exc)
 

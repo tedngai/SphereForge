@@ -125,10 +125,12 @@ def run_stage06(
     logger.info("Built %d training views", len(training_views))
 
     # Run training
+    checkpoint_dir = output_dir / "checkpoints"
     final_gaussians = train_gaussians(
         initial_gaussians=initial_gaussians,
         training_views=training_views,
         config=config,
+        checkpoint_dir=checkpoint_dir,
     )
 
     # Write optimized PLY

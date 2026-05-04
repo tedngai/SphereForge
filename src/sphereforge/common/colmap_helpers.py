@@ -91,10 +91,17 @@ def parse_images_txt(path: Path) -> dict[int, dict]:
 
     images: dict[int, dict] = {}
     with open(path, encoding="utf-8") as f:
-        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+        # Keep blank lines — they represent empty point-observation lines
+        # in COLMAP's two-line-per-image format.
+        lines = [l.strip() for l in f if not l.strip().startswith("#")]
 
     i = 0
     while i < len(lines):
+        # Skip blank lines between entries
+        if not lines[i]:
+            i += 1
+            continue
+
         # First line: image header
         header = lines[i].split()
         if len(header) < 10:
@@ -105,9 +112,9 @@ def parse_images_txt(path: Path) -> dict[int, dict]:
         camera_id = int(header[8])
         name = header[9]
 
-        # Second line: 2D point data
+        # Second line: 2D point data (may be blank)
         point3d_ids: list[int] = []
-        if i + 1 < len(lines):
+        if i + 1 < len(lines) and lines[i + 1]:
             pts_line = lines[i + 1].split()
             # Points are triples: x y point3D_id
             num_pts = len(pts_line) // 3

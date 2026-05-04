@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from sphereforge.common.model_cache import download_if_missing, get_model_path
+from sphereforge.common.model_cache import get_model_path
 
 logger = logging.getLogger("sphereforge.stage04.panda")
 
@@ -110,22 +110,15 @@ class PanDAModel:
         self._model = None
         self._weights_loaded = False
 
-        # Attempt to resolve / download weights
-        try:
-            resolved = download_if_missing(
-                model_name="panda",
-                filename=_PANDA_WEIGHT_FILENAME,
-                url=None,  # No public URL — will raise if not local
-            )
-            self._model_path = resolved
+        # Check whether weights exist locally (no public download URL)
+        if self._model_path.exists():
             self._weights_loaded = True
-            logger.info("PanDA weights found at: %s", resolved)
-        except (FileNotFoundError, RuntimeError) as exc:
+            logger.info("PanDA weights found at: %s", self._model_path)
+        else:
             logger.warning(
-                "PanDA weights not found locally and no public download URL "
-                "is available. See docstring for weight acquisition instructions. "
-                "Original error: %s",
-                exc,
+                "PanDA weights not found at %s and no public download URL "
+                "is available. See docstring for weight acquisition instructions.",
+                self._model_path,
             )
             self._weights_loaded = False
 

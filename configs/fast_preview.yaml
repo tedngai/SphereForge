@@ -1,0 +1,96 @@
+# SphereForge fast-preview configuration
+# Reduced settings for rapid iteration and quick previews.
+# Quality is intentionally lower but runtime is much shorter.
+
+data_dir: data
+model_cache_dir: ~/.cache/sphereforge/models
+log_level: INFO
+
+stage01:
+  input_fps: 2
+  chunk_size: 60
+  min_luminance: 15.0
+  max_luminance: 240.0
+
+stage02:
+  n_faces: 6
+  fov: 90
+  overlap: 10
+  yaw_offset_step: 60
+  crop_resolution: 512
+  generate_masks: true
+  mask_classes: ["person", "vehicle"]
+  overexposure_threshold: 250
+  rpg360_depth_model: metric3d_v2
+  rpg360_graph_optimize: false
+  rpg360_fallback: median_ratio
+
+stage03:
+  feature_type: root_sift
+  matcher_type: sequential
+  refine_intrinsics: false
+  dense_reconstruction: false
+
+stage04:
+  depth_model: depth_anything_v2
+  scale_alignment: median_ratio
+  sky_threshold: auto
+  depth_min: auto
+  depth_max: auto
+  rpg360_perspective_model: depth_anything_v2
+
+stage05:
+  stride: 2
+  stride_low_confidence: 8
+  grazing_angle: 70
+  outlier_pruning: 0.2
+  sparse_pruning: 0.2
+  sky_threshold: auto
+  dedup_distance: auto
+  ncc_confidence_threshold: 0.4
+  cross_validate_depth: false
+
+stage06:
+  iterations: 5000
+  densify_until_iter: 3000
+  densify_every: 500
+  prune_every: 1000
+  l1_weight: 0.8
+  ssim_weight: 0.2
+  sh_degree: 1
+  densification: igs_plus
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.005
+  erp_omnidirectional_neighbors: false
+  depth_reg_weight: 0.1
+  d_normal_weight: 0.02
+  use_intersection_depth: false
+  cdc_gs_enabled: false
+  cdc_gs_wavelet: db2
+
+stage07:
+  refine_backend: sharegs_gsdiff
+  refine_cameras: 12
+  refine_hole_threshold: 0.05
+  sharegs_enabled: true
+  sharegs_homogenization: false
+  sharegs_patch_reuse: true
+  sharegs_optimize_iters: 250
+  gsdiff_backend: sd
+  gsdiff_prompt: "clean indoor scene, high quality, detailed"
+  gsdiff_lpips_threshold: 0.5
+  gsdiff_softmax_depth: false
+  gsdiff_depth_prior: marigold
+  refine_rounds: 1
+  trajectory_mode: auto
+  tier2_weight: 0.20
+  upscale: seedvr2
+
+stage08:
+  min_opacity: 0.01
+  max_scale: auto
+  rap_final_pass: false
+  compact_box_culling: true
+  compact_box_sigma: 3.0
+  export_format: ["ply"]
+  extract_mesh: false
