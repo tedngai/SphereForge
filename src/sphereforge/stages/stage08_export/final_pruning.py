@@ -59,7 +59,7 @@ def final_rap_prune(
     scales = gaussians["scales"]
     rotations = gaussians["rotations"]
     colors = gaussians["colors"]
-    sh_coeffs = gaussians.get("sh_coeffs", None)
+    sh_coeffs = gaussians.get("sh_coeffs")
 
     n_before = positions.shape[0]
     logger.info("Final RAP pruning: %d Gaussians, min_opacity=%.4f, max_scale_ratio=%.1f",

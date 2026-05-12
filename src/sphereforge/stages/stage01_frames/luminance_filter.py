@@ -8,12 +8,16 @@ that would degrade 3D reconstruction quality.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
-import numpy as np
 
 from sphereforge.common.io import read_image
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 

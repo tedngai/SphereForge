@@ -83,7 +83,7 @@ def _marching_cubes(positions: np.ndarray, output_path: Path) -> Path:
     grid, origin = _voxelize(positions, voxel_size)
 
     # Run marching cubes
-    verts, faces, normals, _ = marching_cubes(grid, level=0.5)
+    verts, faces, _normals, _ = marching_cubes(grid, level=0.5)
 
     # Transform from grid coords back to world coords
     verts = verts * voxel_size + origin

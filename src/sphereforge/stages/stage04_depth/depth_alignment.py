@@ -175,7 +175,7 @@ def align_depth_to_colmap(
 
     # Step 1: Find the image entry by name
     image_entry = None
-    for img_id, img_data in images.items():
+    for _img_id, img_data in images.items():
         if img_data["name"] == image_name:
             image_entry = img_data
             break
@@ -247,7 +247,7 @@ def _refine_with_anchor(
     Args:
         aligned_depth: COLMAP-aligned metric depth map, shape (H, W).
         anchor_depth: RPG360 anchor metric depth map, shape (H, W).
-        blend_weight: Base blend weight for the anchor (0–1). Default 0.3
+        blend_weight: Base blend weight for the anchor (0-1). Default 0.3
             means 30% anchor + 70% COLMAP-aligned.
 
     Returns:

@@ -10,16 +10,18 @@ reached.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from sphereforge.config import Stage07Config
 from sphereforge.stages.stage07_occlusion.hole_detection import (
-    compute_hole_coverage,
     detect_holes,
 )
 from sphereforge.stages.stage07_occlusion.sharegs_homogenize import homogenize_gaussians
 from sphereforge.stages.stage07_occlusion.sharegs_reuse import reuse_patches
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage07Config
 
 logger = logging.getLogger("sphereforge.stage07.iterative_fill")
 
@@ -69,7 +71,7 @@ def fill_holes_iterative(
         total_pixels = 0
         per_cam_masks: list[np.ndarray] = []
 
-        for cam_idx, cam in enumerate(novel_cameras):
+        for _cam_idx, cam in enumerate(novel_cameras):
             # Approximate rendering: project Gaussians and check coverage
             alpha_map = _approximate_alpha_render(gaussians, cam)
             hole_mask = detect_holes(alpha_map, threshold=0.5)
@@ -99,7 +101,7 @@ def fill_holes_iterative(
 
         # Step 2: ShareGS fill
         if config.sharegs_enabled:
-            for cam_idx, (cam, hole_mask) in enumerate(zip(novel_cameras, per_cam_masks)):
+            for cam_idx, (cam, hole_mask) in enumerate(zip(novel_cameras, per_cam_masks, strict=False)):
                 if not np.any(hole_mask):
                     continue
 
@@ -259,7 +261,6 @@ def _apply_gsdiff_fill(
     """
     from sphereforge.stages.stage07_occlusion.inpainting import create_inpainter
     from sphereforge.stages.stage07_occlusion.lpips_filter import filter_hallucinations
-    from sphereforge.stages.stage07_occlusion.distillation import distill_inpaint
 
     try:
         inpainter = create_inpainter(
@@ -298,7 +299,7 @@ def _apply_gsdiff_fill(
             continue
 
         # 3. Filter hallucinations → lpips_mask
-        lpips_mask = filter_hallucinations(
+        filter_hallucinations(
             rendered_image, inpainted_image, threshold=config.gsdiff_lpips_threshold,
         )
 

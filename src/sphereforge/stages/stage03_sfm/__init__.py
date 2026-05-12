@@ -8,11 +8,11 @@ from sphereforge.stages.stage03_sfm.model_reader import read_dense_model, read_s
 from sphereforge.stages.stage03_sfm.pipeline import run_stage03
 
 __all__ = [
+    "read_dense_model",
+    "read_sparse_model",
     "run_bundle_adjustment",
     "run_dense_reconstruction",
     "run_feature_extraction",
     "run_feature_matching",
-    "read_dense_model",
-    "read_sparse_model",
     "run_stage03",
 ]

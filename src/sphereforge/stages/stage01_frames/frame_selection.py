@@ -8,11 +8,15 @@ sharpest frame from each chunk, using :func:`compute_sharpness` backed by
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sphereforge.common.io import read_image
 from sphereforge.stages.stage01_frames.sharpness import compute_sharpness
-from sphereforge.stages.stage01_frames.sharpness_cache import SharpnessCache
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from sphereforge.stages.stage01_frames.sharpness_cache import SharpnessCache
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,6 @@ import hashlib
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +128,7 @@ def _download_huggingface(repo_id: str, filename: str, target: Path) -> None:
             f"Cannot download {repo_id}/{filename}: "
             f"huggingface_hub package not installed. "
             f"Install with: pip install huggingface_hub"
-        )
+        ) from None
     except Exception as e:
         raise RuntimeError(
             f"Failed to download {repo_id}/{filename} from HuggingFace: {e}"

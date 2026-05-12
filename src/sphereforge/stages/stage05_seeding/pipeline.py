@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from sphereforge.common.colmap_helpers import quat_to_rotation_matrix
 from sphereforge.common.io import read_depth, read_image, write_ply
-from sphereforge.config import Stage05Config
 
 from .attribute_assignment import assign_initial_attributes
 from .confidence_filter import compute_depth_confidence
@@ -26,6 +26,9 @@ from .projection import project_to_3d
 from .sky_removal import remove_sky
 from .sparse_pruning import prune_sparse_regions
 from .stride_assignment import assign_stride
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage05Config
 
 logger = logging.getLogger("sphereforge.stage05.pipeline")
 

@@ -163,10 +163,7 @@ def export_sog(
     if sh_coeffs is not None:
         # sh_coeffs includes DC (3) + rest
         n_sh = sh_coeffs.shape[-1] - 3 if sh_coeffs.shape[-1] > 3 else 0
-        if n_sh > 0:
-            sh_rest = sh_coeffs[:, 3:].astype(np.float32)  # Remove DC part
-        else:
-            sh_rest = None
+        sh_rest = sh_coeffs[:, 3:].astype(np.float32) if n_sh > 0 else None
     else:
         sh_rest = None
 

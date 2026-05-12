@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from numpy.typing import NDArray
 
 logger = logging.getLogger("sphereforge.stage02.masking")
 
@@ -37,7 +36,7 @@ def generate_yolo_masks(
     if classes is None:
         classes = ["person", "vehicle"]
 
-    h, w = crops[0].shape[:2] if crops else 0, 0
+    _h, _w = crops[0].shape[:2] if crops else 0, 0
     if not crops:
         return []
 
@@ -132,7 +131,7 @@ def generate_overexposure_masks(
 
     Args:
         crops: List of crop images, each (H, W, 3) uint8.
-        threshold: Per-channel brightness threshold (0–255).
+        threshold: Per-channel brightness threshold (0-255).
 
     Returns:
         List of binary mask arrays, each (H, W) uint8, where 255
@@ -185,7 +184,7 @@ def combine_masks(
         )
 
     combined: list[np.ndarray] = []
-    for i, (a, b) in enumerate(zip(masks_a, masks_b)):
+    for _i, (a, b) in enumerate(zip(masks_a, masks_b, strict=False)):
         combined_mask = np.maximum(a, b)
         combined.append(combined_mask)
 

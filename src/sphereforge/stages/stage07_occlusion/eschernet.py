@@ -23,10 +23,10 @@ This file is kept for backward compatibility.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-import numpy as np
-
-from sphereforge.common.model_cache import DEFAULT_CACHE_DIR
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger("sphereforge.stage07.eschernet")
 

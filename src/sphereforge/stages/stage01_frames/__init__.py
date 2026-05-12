@@ -13,11 +13,11 @@ from sphereforge.stages.stage01_frames.sharpness import compute_sharpness
 from sphereforge.stages.stage01_frames.sharpness_cache import SharpnessCache
 
 __all__ = [
+    "SharpnessCache",
     "compute_sharpness",
     "extract_frames",
     "filter_by_luminance",
     "filter_frame_list",
     "run_stage01",
     "select_sharpest_per_chunk",
-    "SharpnessCache",
 ]

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
 from sphereforge.common.io import read_ply, write_ply
-from sphereforge.config import Stage06Config
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage06Config
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ def run_stage06(
 
     # Build training views
     training_views = []
-    for img_id, img_data in sorted(images_dict.items()):
+    for _img_id, img_data in sorted(images_dict.items()):
         cam = cameras.get(img_data["camera_id"], None)
         if cam is None:
             logger.warning("Camera %d not found for image %s, skipping", img_data["camera_id"], img_data["name"])

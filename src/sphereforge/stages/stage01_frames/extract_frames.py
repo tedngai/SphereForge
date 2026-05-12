@@ -49,12 +49,12 @@ def extract_frames(
         raise RuntimeError(
             "FFmpeg is not installed. Please install FFmpeg and ensure it "
             "is available on your PATH."
-        )
+        ) from None
     except subprocess.CalledProcessError:
         raise RuntimeError(
             "FFmpeg is installed but returned a non-zero exit code when "
             "checking its version."
-        )
+        ) from None
 
     # --- Validate input ------------------------------------------------------
     video_path = Path(video_path)
@@ -84,8 +84,7 @@ def extract_frames(
     # --- Run FFmpeg -----------------------------------------------------------
     result = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")

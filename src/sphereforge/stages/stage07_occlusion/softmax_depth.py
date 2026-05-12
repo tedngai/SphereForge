@@ -63,7 +63,7 @@ def softmax_depth_loss(
             align_corners=False,
         )
 
-    H, W = rendered_depth.shape[-2], rendered_depth.shape[-1]
+    _H, _W = rendered_depth.shape[-2], rendered_depth.shape[-1]
 
     # Create validity masks (valid = finite and positive)
     valid_render = torch.isfinite(rendered_depth) & (rendered_depth > 0)

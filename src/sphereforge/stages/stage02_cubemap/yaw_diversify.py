@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from sphereforge.stages.stage02_cubemap.cubemap import CUBEMAP_FACES, extract_cubemap
+from sphereforge.stages.stage02_cubemap.cubemap import CUBEMAP_FACES
 
 if TYPE_CHECKING:
     from sphereforge.config import Stage02Config

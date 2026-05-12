@@ -51,7 +51,7 @@ def compute_visual_complexity(
         raise ImportError(
             "PyWavelets is required for CDC-GS visual complexity computation. "
             "Install with: pip install PyWavelets"
-        )
+        ) from None
 
     # Convert to grayscale if needed
     if image.ndim == 3:
@@ -79,7 +79,7 @@ def compute_visual_complexity(
 
     # Apply 2D DWT
     coeffs = pywt.dwt2(gray, wavelet)
-    cA, (cH, cV, cD) = coeffs
+    _cA, (cH, cV, cD) = coeffs
 
     # Sum absolute values of high-frequency subbands
     # cH = LH (horizontal detail), cV = HL (vertical detail), cD = HH (diagonal)

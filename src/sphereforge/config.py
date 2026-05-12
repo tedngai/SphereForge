@@ -193,7 +193,7 @@ class Stage08Config(BaseModel):
     # V2: Improved pruning
     rap_final_pass: bool = Field(default=True, description="Recovery-aware pruning")
     compact_box_culling: bool = Field(default=True, description="V2: FastGS Mahalanobis tile culling")
-    compact_box_sigma: float = Field(default=3.0, description="Cull tiles outside Nσ of Gaussian extent")
+    compact_box_sigma: float = Field(default=3.0, description="Cull tiles outside No of Gaussian extent")
 
     export_format: list[Literal["ply", "sog", "spz", "html"]] = Field(
         default=["ply", "sog"], description="Export formats"

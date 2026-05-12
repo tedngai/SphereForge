@@ -238,7 +238,7 @@ class PanDAModel:
                 f"Expected image with shape (H, W, 3), got {image.shape}"
             )
 
-        orig_h, orig_w = image.shape[:2]
+        _orig_h, _orig_w = image.shape[:2]
 
         # This will raise NotImplementedError if weights are missing
         self._load_model()

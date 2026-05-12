@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -144,7 +144,7 @@ def log_task_completion(
     if tasks_path is None:
         tasks_path = project_dir / "TASKS.md"
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     # Update TASKS.md status
     if tasks_path.exists():
@@ -167,7 +167,7 @@ def log_task_completion(
             # Silently skip re-logging if already DONE
         else:
             pattern = rf"(\|\s*{re.escape(task_id)}\s*\|\s*){re.escape(current_status)}(\s*\|)"
-            replacement = rf"\g<1>DONE\2"
+            replacement = r"\g<1>DONE\2"
             new_content = re.sub(pattern, replacement, content)
             if new_content == content:
                 raise RuntimeError(
@@ -184,7 +184,7 @@ def log_task_completion(
     entry_lines = [
         f"\n### [{task_id}] Task Completed",
         f"- **Completed:** {timestamp}",
-        f"- **Files created:**",
+        "- **Files created:**",
     ]
     for f in files_created or []:
         entry_lines.append(f"  - `{f}`")
@@ -247,12 +247,12 @@ def check_dependencies(task_id: str, tasks_path: Path | None = None) -> list[str
     if deps_str == "—" or not deps_str:
         return []
 
-    # Parse dependency IDs (handles formats like "T0.5, T0.6", "T1.1–T1.5", "T6.1–T6.10")
+    # Parse dependency IDs (handles formats like "T0.5, T0.6", "T1.1-T1.5", "T6.1-T6.10")
     dep_ids: list[str] = []
     for part in re.split(r"[,;]", deps_str):
         part = part.strip()
-        # Handle ranges like "T2.1–T2.10" or "T1.1-T1.5"
-        range_match = re.match(r"(T\d+)\.(\d+)\s*[–\-]\s*\1\.(\d+)", part)
+        # Handle ranges like "T2.1-T2.10" or "T1.1-T1.5"
+        range_match = re.match(r"(T\d+)\.(\d+)\s*[--]\s*\1\.(\d+)", part)
         if range_match:
             prefix = range_match.group(1)
             start = int(range_match.group(2))

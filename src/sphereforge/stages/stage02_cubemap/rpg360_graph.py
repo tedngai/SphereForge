@@ -354,7 +354,7 @@ def align_face_depths(
         )
 
     aligned: list[np.ndarray] = []
-    for i, (depth, s, t) in enumerate(zip(face_depths, scales, shifts)):
+    for _i, (depth, s, t) in enumerate(zip(face_depths, scales, shifts, strict=False)):
         aligned_i = depth.astype(np.float64) * s + t
         aligned.append(aligned_i.astype(np.float32))
 

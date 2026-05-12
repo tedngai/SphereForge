@@ -39,7 +39,7 @@ def _look_at_rotation(
     forward: tuple[float, float, float],
     up: tuple[float, float, float] = (0.0, -1.0, 0.0),
 ) -> np.ndarray:
-    """Compute a 3×3 rotation matrix for a camera looking in *forward* direction.
+    """Compute a 3x3 rotation matrix for a camera looking in *forward* direction.
 
     The rotation is constructed so that:
     - The camera Z axis (forward) points along *forward*.
@@ -51,7 +51,7 @@ def _look_at_rotation(
         up: The world up direction as (x, y, z).
 
     Returns:
-        3×3 rotation matrix mapping from camera frame to world frame.
+        3x3 rotation matrix mapping from camera frame to world frame.
     """
     fwd = np.array(forward, dtype=np.float64)
     fwd /= np.linalg.norm(fwd)
@@ -82,7 +82,7 @@ def _look_at_rotation(
 
 
 def _yaw_rotation_matrix(yaw_deg: float) -> np.ndarray:
-    """Build a 3×3 rotation matrix for a yaw rotation about the Y axis.
+    """Build a 3x3 rotation matrix for a yaw rotation about the Y axis.
 
     In the OpenCV/COLMAP convention (Y-down), a positive yaw rotates
     the view direction from -Z towards +X.
@@ -91,7 +91,7 @@ def _yaw_rotation_matrix(yaw_deg: float) -> np.ndarray:
         yaw_deg: Yaw angle in degrees.
 
     Returns:
-        3×3 rotation matrix.
+        3x3 rotation matrix.
     """
     yaw_rad = math.radians(yaw_deg)
     cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)

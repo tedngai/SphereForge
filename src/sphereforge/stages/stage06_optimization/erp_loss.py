@@ -205,7 +205,7 @@ def erp_weighted_loss(
 
 
 def _make_rotation_matrix(yaw_deg: float, pitch_deg: float) -> torch.Tensor:
-    """Build a 3×3 rotation matrix from yaw and pitch (Y-down convention).
+    """Build a 3x3 rotation matrix from yaw and pitch (Y-down convention).
 
     Rotation order: yaw around Y, then pitch around X.  The resulting
     matrix **R** is the world→camera rotation so that
@@ -218,7 +218,7 @@ def _make_rotation_matrix(yaw_deg: float, pitch_deg: float) -> torch.Tensor:
         pitch_deg: Pitch angle in degrees (positive = tilt up).
 
     Returns:
-        3×3 rotation matrix, float64.
+        3x3 rotation matrix, float64.
     """
     yaw = math.radians(yaw_deg)
     pitch = math.radians(pitch_deg)

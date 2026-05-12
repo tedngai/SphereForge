@@ -91,6 +91,9 @@ select = [
 ignore = [
     "E501",   # line length handled by black
     "B008",   # do not perform function calls in argument defaults
+    "N806",   # uppercase variable names (H, W, R, K, N are math convention)
+    "N812",   # lowercase imported as non-lowercase (torch.nn.functional as F)
+    "N803",   # argument name uppercase (R, K, H, W are math convention)
 ]
 
 [tool.ruff.lint.isort]

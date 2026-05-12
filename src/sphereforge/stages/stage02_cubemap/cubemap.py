@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 logger = logging.getLogger("sphereforge.stage02.cubemap")
 
@@ -133,7 +136,7 @@ def extract_cubemap(
     Returns:
         List of ``(crop_image, face_name, yaw_deg, pitch_deg)`` tuples,
         one per cubemap face.  Each ``crop_image`` is a square
-        ``crop_resolution × crop_resolution`` array derived from the
+        ``crop_resolution x crop_resolution`` array derived from the
         effective FOV.
 
     Raises:
@@ -152,7 +155,7 @@ def extract_cubemap(
     # total_fov, but we want the central fov portion to correspond to
     # crop_resolution pixels in the final output.
     scale = total_fov / fov
-    render_res = int(math.ceil(scale * erp_w / 4))  # reasonable default
+    render_res = math.ceil(scale * erp_w / 4)  # reasonable default
     # We'll compute at render_res and then resize to crop_resolution later.
     # Actually, let's use a fixed approach: render at a resolution that
     # covers the total_fov, then the crop_resolution is the output size.

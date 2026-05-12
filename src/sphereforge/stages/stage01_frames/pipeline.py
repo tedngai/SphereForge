@@ -14,14 +14,17 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from sphereforge.config import Stage01Config
 from sphereforge.stages.stage01_frames.extract_frames import extract_frames
 from sphereforge.stages.stage01_frames.frame_selection import (
     select_sharpest_per_chunk,
 )
 from sphereforge.stages.stage01_frames.luminance_filter import filter_frame_list
 from sphereforge.stages.stage01_frames.sharpness_cache import SharpnessCache
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage01Config
 
 logger = logging.getLogger("sphereforge.stage01.pipeline")
 

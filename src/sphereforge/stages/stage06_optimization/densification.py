@@ -139,7 +139,6 @@ def should_densify(
         return torch.zeros(0, dtype=torch.bool, device=eas_map.device)
 
     H, W = eas_map.shape
-    device = eas_map.device
 
     # Clamp positions to valid pixel range
     x = screen_positions[:, 0].clamp(0, W - 1)  # (N,)
@@ -241,7 +240,7 @@ def _to_grayscale(image: torch.Tensor) -> torch.Tensor:
         return image
 
     if image.ndim == 3:
-        C, H, W_or_c = image.shape
+        _C, _H, _W_or_c = image.shape
 
         # Channels-last: (H, W, 3)
         if image.shape[-1] == 3:

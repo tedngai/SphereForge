@@ -342,7 +342,7 @@ def fuse_cubemap_depth_to_erp(
     erp_depth = np.full((erp_height, erp_width), np.inf, dtype=np.float64)
 
     # Process each cubemap face
-    for face_depth, face_dir in zip(face_depths, face_directions):
+    for face_depth, face_dir in zip(face_depths, face_directions, strict=False):
         fh, fw = face_depth.shape[:2]
         face_float = face_depth.astype(np.float64)
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from scipy.ndimage import binary_dilation, distance_transform_edt
 
 logger = logging.getLogger("sphereforge.stage07.sharegs_reuse")
 

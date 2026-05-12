@@ -84,7 +84,7 @@ def run_feature_extraction(
             )
         else:
             # Write a temporary image-list file
-            tmp = tempfile.NamedTemporaryFile(
+            tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 mode="w", suffix=".txt", delete=False, prefix="colmap_imagelist_"
             )
             for img_path in image_files:

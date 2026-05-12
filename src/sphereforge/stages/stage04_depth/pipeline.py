@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from sphereforge.common.io import read_depth, read_image, write_depth
-from sphereforge.config import Stage04Config
 from sphereforge.logging_utils import log_task_completion
 from sphereforge.stages.stage04_depth.depth_alignment import align_depth_to_colmap
 from sphereforge.stages.stage04_depth.model_factory import get_depth_estimator
 from sphereforge.stages.stage04_depth.scene_analysis import analyze_depth_scene
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from sphereforge.config import Stage04Config
 
 logger = logging.getLogger("sphereforge.stage04.pipeline")
 

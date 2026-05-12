@@ -30,7 +30,7 @@ def prune_outliers(
         strength: Pruning strength in [0, 1].  Higher values remove
             more aggressively.  A strength of 0 keeps all points.
             The effective multiplier is ``strength * 3.0`` so that the
-            default (0.3) corresponds to a 0.9σ threshold above the
+            default (0.3) corresponds to a 0.9o threshold above the
             global mean.
 
     Returns:

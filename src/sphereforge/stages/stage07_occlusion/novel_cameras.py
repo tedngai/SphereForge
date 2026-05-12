@@ -26,7 +26,7 @@ def generate_novel_cameras(
     """Generate novel camera positions arranged around the scene.
 
     Cameras are placed at *n_directions* equally-spaced azimuth angles, each
-    at *n_distances* radial distances (0.5×, 1.0×, 1.5× scene_radius). Every
+    at *n_distances* radial distances (0.5x, 1.0x, 1.5x scene_radius). Every
     camera looks at ``scene_center``. The up-vector is chosen so that cameras
     near the poles do not flip (we use a world-up of +Z).
 
@@ -38,11 +38,11 @@ def generate_novel_cameras(
             fixed at [0.5, 1.0, 1.5] regardless of this value; the parameter
             is kept for API compatibility and future extension.
         extra_views: Optional list of additional view dicts to append. Each
-            dict must contain a ``viewmat`` key with a 4×4 numpy array.
+            dict must contain a ``viewmat`` key with a 4x4 numpy array.
 
     Returns:
         List of dicts, each with keys:
-        - ``viewmat`` (np.ndarray): 4×4 world-to-camera matrix.
+        - ``viewmat`` (np.ndarray): 4x4 world-to-camera matrix.
         - ``fov`` (float): Horizontal field of view in degrees (90).
         - ``height`` (int): Render height in pixels (1024).
         - ``width`` (int): Render width in pixels (1024).
@@ -54,7 +54,7 @@ def generate_novel_cameras(
     distance_multipliers = distance_multipliers[:n_distances]
 
     cameras: list[dict] = []
-    for d_idx, d_mult in enumerate(distance_multipliers):
+    for _d_idx, d_mult in enumerate(distance_multipliers):
         distance = d_mult * scene_radius
         for a_idx in range(n_directions):
             azimuth = 2.0 * math.pi * a_idx / n_directions
@@ -74,7 +74,7 @@ def generate_novel_cameras(
             # World-up is +Y
             world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
-            # right = normalize(up × forward) — but handle degenerate case
+            # right = normalize(up x forward) — but handle degenerate case
             # when forward is nearly parallel to world_up
             if abs(np.dot(forward, world_up)) > 0.999:
                 world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
@@ -104,7 +104,7 @@ def generate_novel_cameras(
             )
 
     logger.info(
-        "Generated %d novel cameras (%d directions × %d distances)",
+        "Generated %d novel cameras (%d directions x %d distances)",
         len(cameras),
         n_directions,
         len(distance_multipliers),

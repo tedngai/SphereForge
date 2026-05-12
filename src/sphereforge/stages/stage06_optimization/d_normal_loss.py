@@ -40,7 +40,7 @@ def compute_normals_from_depth(
     at the image centre.  The tangent vectors along u and v are computed
     with central differences and the normal is their cross product.
 
-    Border pixels (where the 3×3 stencil crosses the image edge) are
+    Border pixels (where the 3x3 stencil crosses the image edge) are
     filled by replicating the nearest valid normal.
 
     Args:

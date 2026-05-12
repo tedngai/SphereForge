@@ -1,6 +1,6 @@
-"""360-GeoGS ray–ellipsoid intersection depth computation.
+"""360-GeoGS ray-ellipsoid intersection depth computation.
 
-Implements the analytical ray–ellipsoid intersection described in the
+Implements the analytical ray-ellipsoid intersection described in the
 360-GeoGS paper (arXiv:2601.02102).  For each ray and each Gaussian, the
 module finds the intersection of the ray with the 3-D ellipsoid defined
 by the Gaussian's mean, scale, and rotation.  This gives a more accurate
@@ -28,7 +28,7 @@ def quaternion_to_rotation_matrix(
     qy: torch.Tensor,
     qz: torch.Tensor,
 ) -> torch.Tensor:
-    """Convert unit quaternions to 3×3 rotation matrices.
+    """Convert unit quaternions to 3x3 rotation matrices.
 
     This is a PyTorch-native reimplementation that supports batched
     quaternions, unlike the NumPy version in
@@ -78,7 +78,7 @@ def quaternion_to_rotation_matrix(
 
 
 # ---------------------------------------------------------------------------
-# T6.4 — Ray–ellipsoid intersection depth
+# T6.4 — Ray-ellipsoid intersection depth
 # ---------------------------------------------------------------------------
 
 
@@ -89,16 +89,16 @@ def compute_intersection_depth(
     gaussian_scales: torch.Tensor,
     gaussian_rotations: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute ray–Gaussian-surface intersection depths.
+    """Compute ray-Gaussian-surface intersection depths.
 
     For each ray and each Gaussian, find the intersection of the ray with
     the 3-D ellipsoid defined by the Gaussian's mean, scale, and rotation.
-    This is the analytical ray–ellipsoid intersection:
+    This is the analytical ray-ellipsoid intersection:
 
     1. Transform the ray to the Gaussian's local frame using its rotation.
     2. Apply the Gaussian's scale to transform the ellipsoid into a unit
        sphere in the scaled frame.
-    3. Solve the quadratic for ray–sphere intersection in the scaled frame.
+     3. Solve the quadratic for ray-sphere intersection in the scaled frame.
     4. If an intersection exists, transform back to world space and compute
        depth.
     5. If no intersection (discriminant < 0), fall back to the depth of the
@@ -161,7 +161,7 @@ def compute_intersection_depth(
         chunk_end = min(chunk_start + CHUNK_SIZE, N_rays)
         origins_chunk = ray_origins[chunk_start:chunk_end]  # (C, 3)
         dirs_chunk = ray_directions[chunk_start:chunk_end]  # (C, 3)
-        C = origins_chunk.shape[0]
+        origins_chunk.shape[0]
 
         # Expand for broadcasting: (C, 1, 3) - (1, N_g, 3) = (C, N_g, 3)
         origins_exp = origins_chunk.unsqueeze(1)  # (C, 1, 3)
@@ -189,7 +189,7 @@ def compute_intersection_depth(
         # c = |offset_unit|^2 - 1
         a = (dirs_unit ** 2).sum(dim=-1)  # (C, N_g)
         b = 2.0 * (offset_unit * dirs_unit).sum(dim=-1)  # (C, N_g)
-        c = (offset_unit ** 2).sum(dim=-1) - 1.0  # (C, N_g)
+        (offset_unit ** 2).sum(dim=-1) - 1.0  # (C, N_g)
 
         discriminant = b ** 2 - 4.0 * a  # (C, N_g)
 

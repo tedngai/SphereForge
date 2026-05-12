@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from sphereforge.common.io import read_ply, write_ply
-from sphereforge.config import Stage07Config
 from sphereforge.logging_utils import log_task_completion
 from sphereforge.stages.stage07_occlusion.iterative_fill import fill_holes_iterative
 from sphereforge.stages.stage07_occlusion.novel_cameras import generate_novel_cameras
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage07Config
 
 logger = logging.getLogger("sphereforge.stage07.pipeline")
 

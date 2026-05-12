@@ -10,14 +10,13 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
 
 from sphereforge.common.colmap_helpers import write_cameras_txt, write_images_txt
 from sphereforge.common.io import read_image, write_image
-from sphereforge.config import Stage02Config
 from sphereforge.stages.stage02_cubemap.extrinsics import compute_extrinsics
 from sphereforge.stages.stage02_cubemap.intrinsics import compute_intrinsics
 from sphereforge.stages.stage02_cubemap.masking import (
@@ -29,6 +28,9 @@ from sphereforge.stages.stage02_cubemap.yaw_diversify import (
     apply_yaw_offset,
     extract_diversified_cubemaps,
 )
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage02Config
 
 logger = logging.getLogger("sphereforge.stage02.pipeline")
 

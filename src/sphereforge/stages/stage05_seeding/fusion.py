@@ -76,7 +76,7 @@ def fuse_multiview(
     image_ids = sorted(images_dict.keys())
 
     for view_idx, (local_pos, local_col) in enumerate(
-        zip(positions_list, colors_list)
+        zip(positions_list, colors_list, strict=False)
     ):
         # Look up extrinsics — try to match by view index to image ID
         image_id = image_ids[view_idx] if view_idx < len(image_ids) else image_ids[0]
@@ -148,7 +148,7 @@ def fuse_multiview(
     fused_col_list: list[np.ndarray] = []
     confidence_list: list[int] = []
 
-    for root, members in clusters.items():
+    for _root, members in clusters.items():
         n_members = len(members)
         # Confidence = number of contributing views (each point counts as 1)
         member_pos = world_positions[members]  # (K, 3)

@@ -112,7 +112,7 @@ def deduplicate_gaussians(
     fused_col_list: list[np.ndarray] = []
     fused_conf_list: list[float] = []
 
-    for root, members in clusters.items():
+    for _root, members in clusters.items():
         member_pos = pos_f[members]  # (K, 3)
         member_col = col_f[members]  # (K, 3)
         member_conf = conf[members]  # (K,)

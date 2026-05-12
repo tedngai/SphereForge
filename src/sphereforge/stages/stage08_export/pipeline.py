@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from sphereforge.common.io import read_ply, write_ply
-from sphereforge.config import Stage08Config
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage08Config
 
 logger = logging.getLogger(__name__)
 

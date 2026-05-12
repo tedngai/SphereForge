@@ -70,7 +70,7 @@ def filter_hallucinations(
     if inpainted.max() > 1.5:
         inpainted = inpainted / 255.0
 
-    H, W, C = original.shape
+    H, W, _C = original.shape
     hallucination_mask = np.zeros((H, W), dtype=bool)
 
     # Try to use the full LPIPS metric; fall back to simple MSE-based

@@ -36,7 +36,7 @@ def homogenize_gaussians(
             (N,3), ``opacities`` (N,), ``scales`` (N,3), ``rotations`` (N,4),
             and optionally ``sh_coeffs`` (N,45).
         hole_mask: Boolean mask of shape (H, W). ``True`` = hole pixel.
-        camera_pose: 4×4 camera extrinsic matrix (world-to-camera).
+        camera_pose: 4x4 camera extrinsic matrix (world-to-camera).
         intrinsics: Dict with ``fx``, ``fy``, ``cx``, ``cy`` and image
             dimensions (``height``, ``width``).
         feature_radius: Radius in pixels for feature-similarity neighbourhood
@@ -66,7 +66,7 @@ def homogenize_gaussians(
 
     # Compute the distance transform: for each hole pixel, find the
     # nearest non-hole pixel.
-    dist_map, nearest_yx = distance_transform_edt(~hole_mask, return_indices=True)
+    _dist_map, nearest_yx = distance_transform_edt(~hole_mask, return_indices=True)
 
     # Project existing Gaussian centres into image to find per-pixel assignments.
     fx = intrinsics.get("fx", 1.0)
@@ -107,7 +107,7 @@ def homogenize_gaussians(
         if not np.any(new_pixels):
             break
         # Simple nearest-neighbour fill via the distance map
-        for y, x in zip(*np.where(new_pixels)):
+        for y, x in zip(*np.where(new_pixels), strict=False):
             ny, nx = nearest_yx[:, y, x]
             ny, nx = int(ny), int(nx)
             if gauss_idx_map[ny, nx] >= 0:
@@ -123,7 +123,7 @@ def homogenize_gaussians(
     # Subsample holes for efficiency — we don't need one Gaussian per pixel.
     # Use stride proportional to average Gaussian scale.
     avg_scale = float(np.mean(np.exp(scales[valid_idx])))
-    stride = max(1, int(round(avg_scale * fx * 0.5)))
+    stride = max(1, round(avg_scale * fx * 0.5))
     stride = min(stride, max(H, W) // 8)
 
     hole_ys_sub = hole_ys[::stride]
@@ -146,7 +146,7 @@ def homogenize_gaussians(
 
     cam_to_world = np.linalg.inv(camera_pose)
 
-    for hy, hx in zip(hole_ys_sub, hole_xs_sub):
+    for hy, hx in zip(hole_ys_sub, hole_xs_sub, strict=False):
         src_gi = gauss_idx_map[nearest_yx[0, hy, hx], nearest_yx[1, hy, hx]]
         if src_gi < 0:
             continue

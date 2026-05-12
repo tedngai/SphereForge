@@ -12,8 +12,6 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 from sphereforge.common.metrics import compute_ssim
 
@@ -43,7 +41,7 @@ def distill_inpaint(
             (N,3), ``opacities`` (N,), ``scales`` (N,3), ``rotations`` (N,4),
             and optionally ``sh_coeffs`` (N,45).
         novel_views: List of dicts, each containing:
-            - ``viewmat`` (np.ndarray): 4×4 camera extrinsic.
+            - ``viewmat`` (np.ndarray): 4x4 camera extrinsic.
             - ``fov`` (float): Horizontal field of view in degrees.
             - ``height`` (int), ``width`` (int): Image dimensions.
             - ``image`` (np.ndarray): Inpainted target image (H, W, 3).
@@ -64,7 +62,7 @@ def distill_inpaint(
     rotations = np.asarray(gaussians["rotations"], dtype=np.float32)
     sh_coeffs = gaussians.get("sh_coeffs")
 
-    n_gauss = positions.shape[0]
+    positions.shape[0]
 
     if not novel_views:
         logger.warning("No novel views provided for distillation")

@@ -9,9 +9,12 @@ from __future__ import annotations
 import logging
 import struct
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +96,7 @@ def parse_images_txt(path: Path) -> dict[int, dict]:
     with open(path, encoding="utf-8") as f:
         # Keep blank lines — they represent empty point-observation lines
         # in COLMAP's two-line-per-image format.
-        lines = [l.strip() for l in f if not l.strip().startswith("#")]
+        lines = [line.strip() for line in f if not line.strip().startswith("#")]
 
     i = 0
     while i < len(lines):
@@ -403,12 +406,7 @@ def _read_cameras_binary(path: Path) -> dict[int, dict]:
             # Number of params depends on model
             num_params = {"PINHOLE": 4, "SIMPLE_PINHOLE": 3, "RADIAL": 4, "OPENCV": 8, "SIMPLE_RADIAL": 4}
             # Default: read remaining known count or infer from model
-            if model in num_params:
-                np_ = num_params[model]
-            else:
-                # Unknown model — try to read a reasonable number
-                # This is a best-effort heuristic
-                np_ = 4  # Assume PINHOLE-like
+            np_ = num_params.get(model, 4)
             params = list(struct.unpack(f"<{np_}d", f.read(8 * np_)))
             cameras[camera_id] = {
                 "model": model,
@@ -436,7 +434,7 @@ def _read_images_binary(path: Path) -> dict[int, dict]:
             # Read all point data at once: x y point3D_id per point
             point3d_ids: list[int] = []
             if num_points2D > 0:
-                point_data = struct.unpack(f"<{num_points2D * 2}d", f.read(16 * num_points2D))
+                struct.unpack(f"<{num_points2D * 2}d", f.read(16 * num_points2D))
                 point3d_raw = struct.unpack(f"<{num_points2D}q", f.read(8 * num_points2D))
                 point3d_ids = [int(p) for p in point3d_raw if int(p) != -1]
 

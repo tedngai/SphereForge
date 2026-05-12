@@ -19,11 +19,14 @@ interface, making them interchangeable.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 
 from sphereforge.common.model_cache import DEFAULT_CACHE_DIR
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger("sphereforge.stage07.inpainting")
 
@@ -76,8 +79,8 @@ class SDInpainter:
             return
 
         try:
-            from diffusers import StableDiffusionInpaintPipeline
             import torch
+            from diffusers import StableDiffusionInpaintPipeline
         except ImportError as exc:
             raise ImportError(
                 "diffusers and torch are required for SD inpainting. "
@@ -179,7 +182,7 @@ class EscherNetInpainter:
     """
 
     # HuggingFace weight repos
-    _WEIGHT_REPOS = {
+    _WEIGHT_REPOS: ClassVar[dict[str, str]] = {
         "4dof": "kxic/eschernet-4dof",
         "6dof": "kxic/eschernet-6dof",
     }
@@ -260,7 +263,7 @@ class EscherNetInpainter:
         except ImportError:
             raise ImportError(
                 "huggingface_hub required. Install with: pip install huggingface_hub"
-            )
+            ) from None
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to download EscherNet weights: {exc}\n"

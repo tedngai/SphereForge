@@ -78,7 +78,7 @@ def export_spz(ply_path: Path, output_path: Path | None = None) -> Path:
     - Header: magic (4B) + version (1B) + n_gaussians (4B) + n_sh (1B)
     - Positions sorted by Morton code, delta-encoded as float32
     - Scales log-encoded as float32
-    - Rotations quantized as int16 (normalized quaternion × 32767)
+    - Rotations quantized as int16 (normalized quaternion x 32767)
     - Colors as float32 (SH DC coefficients)
     - Opacities as float32 (logit-encoded)
 

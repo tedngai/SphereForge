@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from sphereforge.config import Stage03Config
 from sphereforge.logging_utils import log_task_completion
-
 from sphereforge.stages.stage03_sfm.bundle_adjustment import run_bundle_adjustment
 from sphereforge.stages.stage03_sfm.dense_reconstruction import run_dense_reconstruction
 from sphereforge.stages.stage03_sfm.feature_extraction import run_feature_extraction
 from sphereforge.stages.stage03_sfm.feature_matching import run_feature_matching
 from sphereforge.stages.stage03_sfm.model_reader import read_sparse_model
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage03Config
 
 logger = logging.getLogger("sphereforge.stage03.pipeline")
 

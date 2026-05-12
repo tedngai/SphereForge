@@ -48,11 +48,11 @@ from sphereforge.stages.stage07_occlusion.sharegs_reuse import reuse_patches
 from sphereforge.stages.stage07_occlusion.softmax_depth import softmax_depth_loss
 
 __all__ = [
+    "EscherNetWrapper",
+    "classify_gaps",
     "compute_hole_coverage",
     "detect_holes",
-    "classify_gaps",
     "distill_inpaint",
-    "EscherNetWrapper",
     "fill_holes_iterative",
     "filter_hallucinations",
     "generate_novel_cameras",

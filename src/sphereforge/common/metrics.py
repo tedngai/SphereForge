@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +154,7 @@ def compute_lpips(
         raise ImportError(
             "LPIPS requires the 'lpips' and 'torch' packages. "
             "Install with: pip install lpips torch"
-        )
+        ) from None
 
     # Convert to torch tensors [1, C, H, W] in [-1, 1]
     a_t = torch.from_numpy(image_a).permute(2, 0, 1).unsqueeze(0).float() * 2 - 1

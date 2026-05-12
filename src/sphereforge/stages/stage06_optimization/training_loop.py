@@ -23,14 +23,13 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 from torch import Tensor
 from torch.optim import Adam
 
-from sphereforge.config import Stage06Config
 from sphereforge.stages.stage06_optimization.d_normal_loss import (
     d_normal_loss,
 )
@@ -48,6 +47,9 @@ from sphereforge.stages.stage06_optimization.pruning import (
     PruningBuffer,
     rap_prune,
 )
+
+if TYPE_CHECKING:
+    from sphereforge.config import Stage06Config
 
 logger = logging.getLogger(__name__)
 
@@ -454,7 +456,6 @@ def train_gaussians(
 
     # Training state
     n_gaussians = positions.shape[0]
-    best_psnr = 0.0
     prev_psnr = 0.0
 
     logger.info(
@@ -512,7 +513,7 @@ def train_gaussians(
             sh_degree_to_use = active_sh_degree
 
         # Render using gsplat (or stub fallback)
-        rendered_image, rendered_depth, rendered_alpha = render_gaussians(
+        rendered_image, rendered_depth, _rendered_alpha = render_gaussians(
             means=positions,
             quats=rotations_norm,
             scales=scales_activated,
