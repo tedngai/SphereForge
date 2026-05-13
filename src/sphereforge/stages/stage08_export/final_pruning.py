@@ -13,6 +13,7 @@ import logging
 import numpy as np
 import torch
 
+from sphereforge.common.gaussian_parameters import opacities_to_activated, scales_to_activated
 from sphereforge.stages.stage06_optimization.pruning import PruningBuffer, rap_prune
 
 logger = logging.getLogger("sphereforge.stage08.final_pruning")
@@ -72,10 +73,13 @@ def final_rap_prune(
         stats = {"n_before": 0, "n_after": 0, "n_pruned_opaque": 0, "n_pruned_scale": 0}
         return empty_result, stats
 
+    activated_opacities = opacities_to_activated(opacities).astype(np.float32)
+    activated_scales = scales_to_activated(scales).astype(np.float32)
+
     # Convert numpy arrays to torch tensors for rap_prune
     pos_t = torch.from_numpy(positions.astype(np.float32))
-    scales_t = torch.from_numpy(scales.astype(np.float32))
-    opacities_t = torch.from_numpy(opacities.astype(np.float32))
+    scales_t = torch.from_numpy(activated_scales)
+    opacities_t = torch.from_numpy(activated_opacities)
 
     # Compute scene extent for scale pruning
     centroid = pos_t.mean(dim=0)

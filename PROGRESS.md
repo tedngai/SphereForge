@@ -581,6 +581,125 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
   - (none)
 - **Implementation notes:** Stage 7 pipeline complete: 12206801 Gaussians, 12111430 added
 
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T16:40:13.463094+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T16:43:14.959967+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:13:16.286459+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.032109+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_correct_call_order0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_correct_call_order0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.033121+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_dense_skipped_when_disabl0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_dense_skipped_when_disabl0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.033966+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_feature_type_propagated0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_feature_type_propagated0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.034942+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_refine_intrinsics_propaga0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_refine_intrinsics_propaga0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.035804+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_vocab_tree_path_from_data0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_vocab_tree_path_from_data0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:55:53.036674+00:00
+- **Files created:**
+  - `/tmp/pytest-of-tngai/pytest-0/test_output_directory_structur0/output/database.db`
+  - `/tmp/pytest-of-tngai/pytest-0/test_output_directory_structur0/output/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T18:57:00.726509+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-13T19:34:24.350579+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T19:46:41.953406+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 17204996 Gaussians, 16216140 added
+
 ## Statistics
 
 - **Total tasks:** 94 (94 DONE, 0 remaining)

@@ -12,6 +12,8 @@ import logging
 
 import numpy as np
 
+from sphereforge.common.gaussian_parameters import attenuate_opacities, inflate_scales
+
 logger = logging.getLogger("sphereforge.stage07.sharegs_reuse")
 
 
@@ -20,6 +22,7 @@ def reuse_patches(
     hole_mask: np.ndarray,
     source_views: list[dict],
     colmap_model: dict,
+    max_new_gaussians: int | None = None,
 ) -> dict:
     """Fill holes by reusing Gaussians from other viewpoints.
 
@@ -38,6 +41,8 @@ def reuse_patches(
         colmap_model: COLMAP sparse model dict with ``cameras`` and
             ``images`` keys providing extrinsics and intrinsics for
             coordinate-frame alignment.
+        max_new_gaussians: Optional hard cap for the number of reused
+            Gaussians added in this call.
 
     Returns:
         Updated gaussians dict with reused Gaussians added to fill holes.
@@ -63,15 +68,14 @@ def reuse_patches(
         logger.warning("No source views provided for patch reuse")
         return gaussians
 
-    # Identify which existing Gaussians are visible from source views
-    # by projecting them into each source view and checking if they fall
-    # in non-hole regions. Those are candidates for reuse.
+    # Identify which existing Gaussians are visible from any source view.
     reused_positions = []
     reused_colors = []
     reused_opacities = []
     reused_scales = []
     reused_rotations = []
     reused_sh = [] if sh_coeffs is not None else None
+    candidate_batches: list[np.ndarray] = []
 
     for sv in source_views:
         viewmat = np.asarray(sv["viewmat"], dtype=np.float64)
@@ -108,29 +112,43 @@ def reuse_patches(
         if not np.any(in_image):
             continue
 
-        # These Gaussians are visible from a source view — they are
-        # candidates to be cloned and placed into holes. We clone them
-        # with a slight position offset (small random jitter) and
-        # slightly increased scale for better coverage.
-        candidate_idx = vis_idx[in_image]
+        candidate_batches.append(vis_idx[in_image])
 
-        # Limit the number of clones to avoid excessive memory use
-        max_clones = min(len(candidate_idx), n_holes * 2)
-        if len(candidate_idx) > max_clones:
-            rng = np.random.default_rng(42)
-            candidate_idx = rng.choice(candidate_idx, size=max_clones, replace=False)
+    if not candidate_batches:
+        logger.warning("No Gaussians reused from source views")
+        return gaussians
 
-        for gi in candidate_idx:
-            # Clone with small jitter for diversity
-            jitter = np.random.normal(0, 0.01, size=3).astype(np.float32)
-            reused_positions.append(positions[gi] + jitter)
-            reused_colors.append(colors[gi])
-            reused_opacities.append(min(opacities[gi] * 0.95, 1.0))
-            # Slightly inflate scale for overlap
-            reused_scales.append(scales[gi] + np.log(1.1))
-            reused_rotations.append(rotations[gi])
-            if reused_sh is not None:
-                reused_sh.append(sh_coeffs[gi])
+    candidate_idx = np.unique(np.concatenate(candidate_batches, axis=0))
+    if candidate_idx.size == 0:
+        logger.warning("No Gaussians reused from source views")
+        return gaussians
+
+    hole_budget = max(64, n_holes // 256)
+    effective_budget = min(candidate_idx.size, hole_budget)
+    if max_new_gaussians is not None:
+        effective_budget = min(effective_budget, max_new_gaussians)
+
+    if effective_budget <= 0:
+        logger.info("Patch reuse skipped: no remaining Gaussian budget")
+        return gaussians
+
+    rng = np.random.default_rng(42)
+    if candidate_idx.size > effective_budget:
+        candidate_idx = rng.choice(candidate_idx, size=effective_budget, replace=False)
+
+    for gi in candidate_idx:
+        jitter = rng.normal(0.0, 0.01, size=3).astype(np.float32)
+        reused_positions.append(positions[gi] + jitter)
+        reused_colors.append(colors[gi])
+        reused_opacities.append(
+            attenuate_opacities(np.asarray([opacities[gi]], dtype=np.float32), 0.95)[0]
+        )
+        reused_scales.append(
+            inflate_scales(np.asarray([scales[gi]], dtype=np.float32), 1.1)[0]
+        )
+        reused_rotations.append(rotations[gi])
+        if reused_sh is not None:
+            reused_sh.append(sh_coeffs[gi])
 
     if not reused_positions:
         logger.warning("No Gaussians reused from source views")

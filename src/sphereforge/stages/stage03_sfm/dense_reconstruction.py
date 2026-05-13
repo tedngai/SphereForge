@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -83,6 +84,14 @@ def run_dense_reconstruction(
     sparse_dir = Path(sparse_dir)
     image_dir = Path(image_dir)
     dense_dir = Path(dense_dir)
+
+    # COLMAP image_undistorter aborts when rerunning into an existing workspace
+    # that already contains copied undistorted images. Clear the dense workspace
+    # up front so resumed pipelines can safely rebuild Stage 3 outputs.
+    if dense_dir.exists() and any(dense_dir.iterdir()):
+        logger.info("Clearing existing dense workspace before rerun: %s", dense_dir)
+        shutil.rmtree(dense_dir)
+
     dense_dir.mkdir(parents=True, exist_ok=True)
 
     # The mapper typically puts the model in sparse_dir/0/

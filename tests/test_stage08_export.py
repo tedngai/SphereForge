@@ -81,6 +81,17 @@ class TestFinalPruning:
         assert "n_before" in stats
         assert "n_after" in stats
 
+    def test_logit_encoded_opacity_is_activated_before_pruning(self, sample_gaussians):
+        from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
+
+        g = sample_gaussians.copy()
+        g["opacities"] = np.full(g["opacities"].shape, -2.0, dtype=np.float32)
+        g["scales"] = np.full(g["scales"].shape, -2.0, dtype=np.float32)
+
+        result, stats = final_rap_prune(g, min_opacity=0.005)
+        assert result["positions"].shape[0] == g["positions"].shape[0]
+        assert stats["n_pruned_opaque"] == 0
+
 
 # ---------------------------------------------------------------------------
 # T8.2: Compact box culling

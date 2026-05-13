@@ -13,6 +13,8 @@ import logging
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
+from sphereforge.common.gaussian_parameters import inflate_scales
+
 logger = logging.getLogger("sphereforge.stage07.sharegs_homogenize")
 
 
@@ -173,11 +175,11 @@ def homogenize_gaussians(
         new_pos = pt_world[:3]
 
         # Slightly inflate scale for better coverage
-        new_scl = src_scl + np.log(1.2)  # ~20% larger in each axis
+        new_scl = inflate_scales(np.asarray([src_scl], dtype=np.float32), 1.2)[0]
 
         new_positions.append(new_pos)
         new_colors.append(src_col)
-        new_opacities.append(min(src_opa, 1.0))
+        new_opacities.append(src_opa)
         new_scales.append(new_scl)
         new_rotations.append(src_rot)
         if new_sh is not None:

@@ -102,6 +102,18 @@ class SDInpainter:
 
         logger.info("SD inpainting model loaded on %s", self._device_str)
 
+    def ensure_available(self) -> None:
+        """Validate that the configured inpainting backend can be used."""
+        try:
+            import torch  # noqa: F401
+            from diffusers import StableDiffusionInpaintPipeline  # noqa: F401
+            import transformers  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "Stable Diffusion inpainting requires torch, diffusers, and transformers. "
+                "Install with: pip install torch diffusers transformers"
+            ) from exc
+
     def inpaint_holes(
         self,
         rendered_image: np.ndarray,
@@ -314,6 +326,10 @@ class EscherNetInpainter:
                 f"See: https://github.com/kxhit/EscherNet#installation"
             ) from exc
 
+    def ensure_available(self) -> None:
+        """Validate that the configured inpainting backend can be used."""
+        self._load_model()
+
     def inpaint_holes(
         self,
         rendered_image: np.ndarray,
@@ -383,6 +399,7 @@ class EscherNetInpainter:
 
 def create_inpainter(
     backend: str = "sd",
+    validate_backend: bool = False,
     **kwargs,
 ) -> SDInpainter | EscherNetInpainter:
     """Factory function for creating an inpainting backend.
@@ -390,6 +407,8 @@ def create_inpainter(
     Args:
         backend: "sd" for Stable Diffusion inpainting (default, recommended),
             "eschernet" for multi-view diffusion inpainting.
+        validate_backend: When True, eagerly load the backend so missing
+            dependencies fail once up front instead of during each inference call.
         **kwargs: Arguments passed to the inpainter constructor.
 
     Returns:
@@ -399,11 +418,16 @@ def create_inpainter(
         ValueError: If backend name is not recognized.
     """
     if backend == "sd":
-        return SDInpainter(**kwargs)
+        inpainter: SDInpainter | EscherNetInpainter = SDInpainter(**kwargs)
     elif backend in ("eschernet", "escher_net"):
-        return EscherNetInpainter(**kwargs)
+        inpainter = EscherNetInpainter(**kwargs)
     else:
         raise ValueError(
             f"Unknown inpainting backend: {backend!r}. "
             f"Supported: 'sd', 'eschernet'"
         )
+
+    if validate_backend:
+        inpainter.ensure_available()
+
+    return inpainter

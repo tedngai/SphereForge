@@ -559,6 +559,25 @@ class TestDenseReconstruction:
         assert str(dense_dir / "fused.ply") == fusion_cmd[op_idx + 1]
 
     @patch("sphereforge.stages.stage03_sfm.dense_reconstruction.subprocess.run")
+    def test_clears_existing_dense_workspace_before_rerun(self, mock_run, tmp_path: Path) -> None:
+        """Reruns should clear stale dense outputs before invoking COLMAP again."""
+        mock_run.return_value = _make_success_result()
+
+        sparse_dir = tmp_path / "sparse"
+        (sparse_dir / "0").mkdir(parents=True)
+        image_dir = tmp_path / "images"
+        image_dir.mkdir()
+        dense_dir = tmp_path / "dense"
+        stale_file = dense_dir / "images" / "stale.png"
+        stale_file.parent.mkdir(parents=True)
+        stale_file.write_text("stale")
+
+        run_dense_reconstruction(sparse_dir, image_dir, dense_dir)
+
+        assert not stale_file.exists()
+        assert dense_dir.exists()
+
+    @patch("sphereforge.stages.stage03_sfm.dense_reconstruction.subprocess.run")
     def test_nonzero_raises(self, mock_run, tmp_path: Path) -> None:
         """Non-zero exit from any step should raise RuntimeError."""
         fail = MagicMock()

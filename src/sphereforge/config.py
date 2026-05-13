@@ -143,6 +143,22 @@ class Stage06Config(BaseModel):
     checkpoint_every: int = Field(
         default=5000, description="Save intermediate .ply every N iterations (0 = disabled)"
     )
+    max_gaussians: int = Field(
+        default=1_000_000,
+        description="Hard cap on Gaussian count during densification",
+    )
+    opacity_reset_every: int = Field(
+        default=3000,
+        description="Reset opacities every N iterations (0 = disabled)",
+    )
+    prune_min_opacity: float = Field(
+        default=0.005,
+        description="Prune Gaussians below this activated opacity",
+    )
+    prune_max_scale_ratio: float = Field(
+        default=0.1,
+        description="Prune Gaussians whose max scale exceeds scene_extent * ratio",
+    )
 
 
 class Stage07Config(BaseModel):
@@ -160,6 +176,14 @@ class Stage07Config(BaseModel):
     sharegs_homogenization: bool = Field(default=True, description="Feature-scale guided Gaussian redistribution")
     sharegs_patch_reuse: bool = Field(default=True, description="Copy Gaussians from other viewpoints")
     sharegs_optimize_iters: int = Field(default=500, description="Quick blend optimization")
+    sharegs_patch_reuse_max_new: int = Field(
+        default=5000,
+        description="Maximum Gaussians patch reuse may add per camera per round",
+    )
+    max_gaussians: int = Field(
+        default=2_000_000,
+        description="Hard cap on total Gaussian count during Stage 7 refinement",
+    )
 
     # GS-Diff (V2 replaces GSFix3D)
     # GS-Diff inpainting backend
@@ -174,6 +198,10 @@ class Stage07Config(BaseModel):
     )
     gsdiff_softmax_depth: bool = Field(default=True, description="Depth-prior-guided training")
     gsdiff_depth_prior: str = Field(default="marigold", description="Monocular depth model")
+    gsdiff_strict_backend: bool = Field(
+        default=False,
+        description="Raise instead of skipping when the configured GS-Diff backend is unavailable",
+    )
     refine_rounds: int = Field(
         default=2, description="V2: reduced from 3 (ShareGS pre-pass handles easy gaps)"
     )

@@ -641,3 +641,220 @@ class TestDNormalLoss:
         wrong_normals = torch.ones(H + 1, W, 3)
         with pytest.raises(ValueError):
             d_normal_loss(depth, surface_normals=wrong_normals)
+
+
+class TestTrainGaussians:
+    """Regression tests for Stage 6 training-loop control flow."""
+
+    def test_pruning_uses_fresh_activations_after_densify(self, monkeypatch) -> None:
+        """Pruning should recompute activated tensors after densification changes N."""
+        from sphereforge.config import Stage06Config
+        import sphereforge.stages.stage06_optimization.training_loop as training_loop
+
+        def fake_render_gaussians(
+            means: torch.Tensor,
+            quats: torch.Tensor,
+            scales: torch.Tensor,
+            opacities: torch.Tensor,
+            colors: torch.Tensor,
+            viewmat: torch.Tensor,
+            fov: float,
+            image_height: int,
+            image_width: int,
+            sh_degree: int = 0,
+            K: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            base = means.sum() * 0.0
+            rendered_image = base + torch.zeros(3, image_height, image_width, device=means.device)
+            rendered_depth = base + torch.zeros(image_height, image_width, device=means.device)
+            rendered_alpha = base + torch.ones(image_height, image_width, device=means.device)
+            return rendered_image, rendered_depth, rendered_alpha
+
+        def fake_long_axis_split(
+            positions: torch.Tensor,
+            scales: torch.Tensor,
+            rotations: torch.Tensor,
+            opacities: torch.Tensor,
+            colors: torch.Tensor,
+            mask: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            return (
+                torch.cat([positions, positions[:1].clone()], dim=0),
+                torch.cat([scales, scales[:1].clone()], dim=0),
+                torch.cat([rotations, rotations[:1].clone()], dim=0),
+                torch.cat([opacities, opacities[:1].clone()], dim=0),
+                torch.cat([colors, colors[:1].clone()], dim=0),
+            )
+
+        def fake_rap_prune(
+            positions: torch.Tensor,
+            scales: torch.Tensor,
+            opacities: torch.Tensor,
+            min_opacity: float = 0.005,
+            max_scale_ratio: float = 10.0,
+            scene_extent: float | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            assert positions.shape[0] == scales.shape[0] == opacities.shape[0]
+            keep_mask = torch.ones(positions.shape[0], dtype=torch.bool, device=positions.device)
+            return positions, scales, opacities, keep_mask
+
+        monkeypatch.setattr(training_loop, "render_gaussians", fake_render_gaussians)
+        monkeypatch.setattr(training_loop, "compute_eas", lambda img: torch.ones(2, 2, device=img.device))
+        monkeypatch.setattr(
+            training_loop,
+            "should_densify",
+            lambda eas_map, screen_positions, threshold: torch.ones(
+                screen_positions.shape[0], dtype=torch.bool, device=screen_positions.device
+            ),
+        )
+        monkeypatch.setattr(training_loop, "long_axis_split", fake_long_axis_split)
+        monkeypatch.setattr(training_loop, "rap_prune", fake_rap_prune)
+
+        initial_gaussians = {
+            "positions": torch.tensor([[0.0, 0.0, 2.0], [0.5, 0.0, 2.5]], dtype=torch.float32),
+            "colors": torch.ones(2, 3, dtype=torch.float32),
+            "opacities": torch.zeros(2, dtype=torch.float32),
+            "scales": torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=torch.float32),
+            "rotations": torch.tensor(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32
+            ),
+        }
+        training_views = [
+            {
+                "viewmat": torch.eye(4, dtype=torch.float32),
+                "target_image": torch.zeros(3, 2, 2, dtype=torch.float32),
+                "target_depth": torch.zeros(2, 2, dtype=torch.float32),
+                "fov": 90.0,
+                "height": 2,
+                "width": 2,
+            }
+        ]
+        config = Stage06Config(
+            iterations=2,
+            densify_until_iter=2,
+            densify_every=1,
+            prune_every=1,
+            sh_degree=0,
+            erp_distortion_weights=False,
+            erp_scale_flattening_loss=0.0,
+            depth_reg_weight=0.0,
+            d_normal_weight=0.0,
+            checkpoint_every=0,
+        )
+
+        result = training_loop.train_gaussians(
+            initial_gaussians=initial_gaussians,
+            training_views=training_views,
+            config=config,
+            device="cpu",
+            checkpoint_dir=None,
+        )
+
+        assert result["positions"].shape[0] > initial_gaussians["positions"].shape[0]
+
+    def test_densification_respects_hard_gaussian_cap(self, monkeypatch) -> None:
+        """Densification should stop once the configured Gaussian cap is reached."""
+        from sphereforge.config import Stage06Config
+        import sphereforge.stages.stage06_optimization.training_loop as training_loop
+
+        def fake_render_gaussians(
+            means: torch.Tensor,
+            quats: torch.Tensor,
+            scales: torch.Tensor,
+            opacities: torch.Tensor,
+            colors: torch.Tensor,
+            viewmat: torch.Tensor,
+            fov: float = 90.0,
+            image_height: int = 2,
+            image_width: int = 2,
+            sh_degree: int = 0,
+            K: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            base = means.sum() * 0.0
+            rendered_image = base + torch.zeros(3, image_height, image_width, device=means.device)
+            rendered_depth = base + torch.zeros(image_height, image_width, device=means.device)
+            rendered_alpha = base + torch.ones(image_height, image_width, device=means.device)
+            return rendered_image, rendered_depth, rendered_alpha
+
+        def fake_long_axis_split(
+            positions: torch.Tensor,
+            scales: torch.Tensor,
+            rotations: torch.Tensor,
+            opacities: torch.Tensor,
+            colors: torch.Tensor,
+            mask: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            selected = mask.nonzero(as_tuple=True)[0]
+            clones = positions[selected]
+            return (
+                torch.cat([positions, clones], dim=0),
+                torch.cat([scales, scales[selected]], dim=0),
+                torch.cat([rotations, rotations[selected]], dim=0),
+                torch.cat([opacities, opacities[selected]], dim=0),
+                torch.cat([colors, colors[selected]], dim=0),
+            )
+
+        monkeypatch.setattr(training_loop, "render_gaussians", fake_render_gaussians)
+        monkeypatch.setattr(training_loop, "compute_eas", lambda img: torch.ones(2, 2, device=img.device))
+        monkeypatch.setattr(
+            training_loop,
+            "should_densify",
+            lambda eas_map, screen_positions, threshold: torch.ones(
+                screen_positions.shape[0], dtype=torch.bool, device=screen_positions.device
+            ),
+        )
+        monkeypatch.setattr(training_loop, "long_axis_split", fake_long_axis_split)
+        monkeypatch.setattr(
+            training_loop,
+            "rap_prune",
+            lambda positions, scales, opacities, min_opacity=0.005, max_scale_ratio=0.1, scene_extent=None: (
+                positions,
+                scales,
+                opacities,
+                torch.ones(positions.shape[0], dtype=torch.bool, device=positions.device),
+            ),
+        )
+
+        initial_gaussians = {
+            "positions": torch.tensor([[0.0, 0.0, 2.0], [0.5, 0.0, 2.5]], dtype=torch.float32),
+            "colors": torch.ones(2, 3, dtype=torch.float32),
+            "opacities": torch.zeros(2, dtype=torch.float32),
+            "scales": torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=torch.float32),
+            "rotations": torch.tensor(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=torch.float32
+            ),
+        }
+        training_views = [
+            {
+                "viewmat": torch.eye(4, dtype=torch.float32),
+                "target_image": torch.zeros(3, 2, 2, dtype=torch.float32),
+                "target_depth": torch.zeros(2, 2, dtype=torch.float32),
+                "K": torch.eye(3, dtype=torch.float32),
+                "fov": 90.0,
+                "height": 2,
+                "width": 2,
+            }
+        ]
+        config = Stage06Config(
+            iterations=2,
+            densify_until_iter=2,
+            densify_every=1,
+            prune_every=100,
+            sh_degree=0,
+            erp_distortion_weights=False,
+            erp_scale_flattening_loss=0.0,
+            depth_reg_weight=0.0,
+            d_normal_weight=0.0,
+            checkpoint_every=0,
+            max_gaussians=3,
+        )
+
+        result = training_loop.train_gaussians(
+            initial_gaussians=initial_gaussians,
+            training_views=training_views,
+            config=config,
+            device="cpu",
+            checkpoint_dir=None,
+        )
+
+        assert result["positions"].shape[0] == 3

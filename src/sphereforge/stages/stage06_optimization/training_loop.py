@@ -124,6 +124,7 @@ def render_gaussians(
     image_height: int,
     image_width: int,
     sh_degree: int = 0,
+    K: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Render Gaussians from a single camera view.
 
@@ -152,6 +153,7 @@ def render_gaussians(
         colors: SH color coefficients (N, K).  Layout matches 3DGS convention:
             K = (sh_degree+1)^2 * 3.  For degree 0, K=3 (DC only).
         viewmat: World-to-camera 4x4 matrix.
+        K: Optional 3x3 pinhole intrinsics matrix.  If provided, used directly.
         fov: Horizontal field of view in degrees.
         image_height: Rendered image height.
         image_width: Rendered image width.
@@ -172,6 +174,7 @@ def render_gaussians(
             opacities=opacities,
             colors=colors,
             viewmat=viewmat,
+            K=K,
             fov=fov,
             image_height=image_height,
             image_width=image_width,
@@ -192,6 +195,7 @@ def _render_gaussians_gsplat(
     opacities: Tensor,
     colors: Tensor,
     viewmat: Tensor,
+    K: Tensor | None,
     fov: float,
     image_height: int,
     image_width: int,
@@ -220,9 +224,10 @@ def _render_gaussians_gsplat(
     # gsplat expects viewmats as (C, 4, 4) — batch dimension even for single view
     viewmats = viewmat.unsqueeze(0).to(device)  # (1, 4, 4)
 
-    # Build intrinsics matrix K from FOV
-    Ks = _fov_to_intrinsics_matrix(fov, image_height, image_width, device=device)
-    Ks = Ks.unsqueeze(0)  # (1, 3, 3)
+    if K is not None:
+        Ks = K.to(device=device, dtype=torch.float32).unsqueeze(0)
+    else:
+        Ks = _fov_to_intrinsics_matrix(fov, image_height, image_width, device=device).unsqueeze(0)
 
     # Ensure quaternions are normalized (unit quaternions) — gsplat requirement
     quats_norm = quats / (quats.norm(dim=1, keepdim=True) + 1e-8)
@@ -405,7 +410,8 @@ def train_gaussians(
         initial_gaussians: Dict with keys: positions (N,3), colors (N,K),
             opacities (N,), scales (N,3), rotations (N,4).
         training_views: List of dicts, each with: viewmat (4,4), fov, height,
-            width, target_image (3,H,W), target_depth (H,W), latitudes (H,W).
+            width, target_image (3,H,W), target_depth (H,W), optional K,
+            and latitudes (H,W).
         config: Stage06 configuration.
         device: "auto", "cuda", or "cpu".
         checkpoint_dir: Optional directory to save intermediate PLY checkpoints.
@@ -482,6 +488,9 @@ def train_gaussians(
             "height": view["height"],
             "width": view["width"],
         }
+        K = view.get("K", None)
+        if K is not None:
+            gpu_view["K"] = K.to(device)
         latitudes = view.get("latitudes", None)
         if latitudes is not None:
             gpu_view["latitudes"] = latitudes.to(device)
@@ -536,6 +545,7 @@ def train_gaussians(
             opacities=opacities_activated,
             colors=colors,
             viewmat=viewmat,
+            K=view.get("K", None),
             fov=view["fov"],
             image_height=view["height"],
             image_width=view["width"],
@@ -616,6 +626,35 @@ def train_gaussians(
                     )
                     small_mask = densify_mask & ~large_mask
 
+                    remaining_capacity = max(config.max_gaussians - positions.shape[0], 0)
+                    requested_growth = int(large_mask.sum().item() + small_mask.sum().item())
+                    if remaining_capacity <= 0:
+                        logger.info(
+                            "Densification skipped at iter %d: Gaussian cap reached (%d)",
+                            iteration,
+                            config.max_gaussians,
+                        )
+                        large_mask = torch.zeros_like(large_mask)
+                        small_mask = torch.zeros_like(small_mask)
+                    elif requested_growth > remaining_capacity:
+                        large_indices = large_mask.nonzero(as_tuple=True)[0]
+                        small_indices = small_mask.nonzero(as_tuple=True)[0]
+                        selected = torch.cat([large_indices, small_indices], dim=0)[:remaining_capacity]
+                        limited_large_mask = torch.zeros_like(large_mask)
+                        limited_small_mask = torch.zeros_like(small_mask)
+                        if selected.numel() > 0:
+                            limited_large_mask[selected] = large_mask[selected]
+                            limited_small_mask[selected] = small_mask[selected]
+                        large_mask = limited_large_mask
+                        small_mask = limited_small_mask
+                        logger.info(
+                            "Densification capped at iter %d: requested +%d, allowing +%d (cap=%d)",
+                            iteration,
+                            requested_growth,
+                            remaining_capacity,
+                            config.max_gaussians,
+                        )
+
                     if large_mask.any():
                         positions, scales, rotations, opacities, colors = long_axis_split(
                             positions, scales, rotations, opacities, colors, large_mask,
@@ -634,10 +673,18 @@ def train_gaussians(
                         )
 
                 n_gaussians = positions.shape[0]
+                if positions.is_cuda:
+                    torch.cuda.empty_cache()
 
         # ---- Pruning ----
         if iteration > 0 and iteration % config.prune_every == 0:
             with torch.no_grad():
+                # Densification earlier in this iteration may have changed the
+                # parameter count, so recompute activated tensors from the
+                # current raw parameters before building the pruning mask.
+                current_opacities_activated = torch.sigmoid(opacities)
+                current_scales_activated = torch.exp(scales).clamp(max=10.0)
+
                 # Compute PSNR for recovery check
                 with torch.no_grad():
                     mse = ((rendered_image - target_image) ** 2).mean()
@@ -645,8 +692,9 @@ def train_gaussians(
 
                 # Prune - get keep_mask from rap_prune (positions/scales/opacities returned are activated, ignore them)
                 _, _, _, keep_mask = rap_prune(
-                    positions, scales_activated, opacities_activated,
-                    min_opacity=0.005,
+                    positions, current_scales_activated, current_opacities_activated,
+                    min_opacity=config.prune_min_opacity,
+                    max_scale_ratio=config.prune_max_scale_ratio,
                 )
 
                 # Store pruned for potential recovery
@@ -682,9 +730,26 @@ def train_gaussians(
 
                 pruning_buffer.clear_old(iteration)
                 _update_optimizer(optimizer, positions, scales, rotations, opacities, colors)
+                if positions.is_cuda:
+                    torch.cuda.empty_cache()
 
                 prev_psnr = current_psnr
                 n_gaussians = positions.shape[0]
+
+        # ---- Opacity reset ----
+        if (
+            config.opacity_reset_every > 0
+            and iteration > 0
+            and iteration % config.opacity_reset_every == 0
+        ):
+            with torch.no_grad():
+                reset_value = min(max(config.prune_min_opacity * 2.0, 1e-4), 1 - 1e-4)
+                reset_logit = torch.logit(
+                    torch.tensor(reset_value, device=opacities.device, dtype=opacities.dtype),
+                )
+                opacities.fill_(reset_logit)
+                if opacities.is_cuda:
+                    torch.cuda.empty_cache()
 
         # ---- Checkpointing ----
         if (

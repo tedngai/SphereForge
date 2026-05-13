@@ -17,6 +17,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _camera_to_intrinsics_matrix(cam: dict) -> torch.Tensor:
+    """Build a 3x3 intrinsics matrix from a parsed COLMAP camera entry."""
+    model = cam["model"]
+    params = cam["params"]
+
+    if model == "PINHOLE":
+        fx, fy, cx, cy = params[:4]
+    elif model == "SIMPLE_PINHOLE":
+        fx, cx, cy = params[:3]
+        fy = fx
+    else:
+        raise ValueError(f"Unsupported COLMAP camera model for Stage 6: {model}")
+
+    return torch.tensor(
+        [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+
+
 def run_stage06(
     config: Stage06Config,
     initial_ply_path: Path,
@@ -152,12 +171,14 @@ def run_stage06(
         params = cam["params"]
         fx = params[0]
         fov = 2 * np.degrees(np.arctan(cam["width"] / (2 * fx)))
+        K = _camera_to_intrinsics_matrix(cam)
 
         # Compute latitudes (ERP pixel → latitude mapping)
         latitudes = _compute_view_latitudes(cam["height"], cam["width"])
 
         training_views.append({
             "viewmat": torch.from_numpy(viewmat.astype(np.float32)),
+            "K": K,
             "fov": float(fov),
             "height": cam["height"],
             "width": cam["width"],

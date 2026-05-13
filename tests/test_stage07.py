@@ -485,6 +485,7 @@ class TestIterativeFill:
         from sphereforge.config import Stage07Config
 
         config = Stage07Config(
+            refine_backend="gsfix3d",
             refine_rounds=2,
             refine_hole_threshold=0.001,
             sharegs_enabled=True,
@@ -528,6 +529,7 @@ class TestIterativeFill:
         from sphereforge.config import Stage07Config
 
         config = Stage07Config(
+            refine_backend="gsfix3d",
             refine_rounds=1,
             refine_hole_threshold=0.001,
             sharegs_enabled=True,
@@ -544,6 +546,44 @@ class TestIterativeFill:
         n_after = result["positions"].shape[0]
 
         assert n_after >= n_before
+
+    def test_approximate_alpha_render_activates_raw_logits(self) -> None:
+        """Stage 7 coverage checks should treat raw logit opacities as visible."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _approximate_alpha_render
+
+        gaussians = {
+            "positions": np.array([[0.0, 0.0, 1.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+            "opacities": np.array([-2.0], dtype=np.float32),
+            "scales": np.array([[-2.0, -2.0, -2.0]], dtype=np.float32),
+            "rotations": np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        }
+        cam = {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 32, "width": 32}
+
+        alpha = _approximate_alpha_render(gaussians, cam)
+        assert alpha.max() > 0.1
+
+    def test_gsdiff_strict_backend_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strict GS-Diff mode should fail fast when the backend is unavailable."""
+        from sphereforge.config import Stage07Config
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _apply_gsdiff_fill
+
+        def _raise_backend_error(**_kwargs):
+            raise ImportError("transformers missing")
+
+        monkeypatch.setattr(
+            "sphereforge.stages.stage07_occlusion.inpainting.create_inpainter",
+            _raise_backend_error,
+        )
+
+        with pytest.raises(RuntimeError, match="backend unavailable"):
+            _apply_gsdiff_fill(
+                gaussians=self._make_gaussians(10),
+                config=Stage07Config(gsdiff_strict_backend=True),
+                novel_cameras=[{"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 16, "width": 16}],
+                per_cam_masks=[np.ones((16, 16), dtype=bool)],
+                round_idx=0,
+            )
 
 
 # ===================================================================
@@ -634,6 +674,33 @@ class TestShareGSReuse:
         result = reuse_patches(gaussians, hole_mask, source_views, {"cameras": {}, "images": {}})
         n_after = result["positions"].shape[0]
         assert n_after > 50, "Patch reuse should add Gaussians"
+
+    def test_patch_reuse_respects_budget(self) -> None:
+        """Patch reuse should cap growth per call."""
+        from sphereforge.stages.stage07_occlusion.sharegs_reuse import reuse_patches
+
+        rng = np.random.default_rng(0)
+        gaussians = {
+            "positions": rng.normal(0, 0.5, (80, 3)).astype(np.float32),
+            "colors": rng.uniform(0, 1, (80, 3)).astype(np.float32),
+            "opacities": np.zeros(80, dtype=np.float32),
+            "scales": np.full((80, 3), -2.0, dtype=np.float32),
+            "rotations": np.tile([1, 0, 0, 0], (80, 1)).astype(np.float32),
+        }
+        hole_mask = np.ones((256, 256), dtype=bool)
+        source_views = [
+            {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 256, "width": 256},
+            {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 256, "width": 256},
+        ]
+
+        result = reuse_patches(
+            gaussians,
+            hole_mask,
+            source_views,
+            {"cameras": {}, "images": {}},
+            max_new_gaussians=7,
+        )
+        assert result["positions"].shape[0] - gaussians["positions"].shape[0] <= 7
 
 
 # ===================================================================

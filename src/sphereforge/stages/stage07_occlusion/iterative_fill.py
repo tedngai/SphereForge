@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from sphereforge.common.gaussian_parameters import opacities_to_activated
 from sphereforge.stages.stage07_occlusion.hole_detection import (
     detect_holes,
 )
@@ -105,6 +106,14 @@ def fill_holes_iterative(
                 if not np.any(hole_mask):
                     continue
 
+                remaining_budget = _remaining_gaussian_budget(gaussians, config)
+                if remaining_budget <= 0:
+                    logger.warning(
+                        "Stage 7 Gaussian cap reached (%d); skipping further ShareGS growth",
+                        config.max_gaussians,
+                    )
+                    break
+
                 intrinsics = _cam_to_intrinsics(cam)
 
                 if config.sharegs_homogenization:
@@ -119,6 +128,13 @@ def fill_holes_iterative(
                     )
 
                 if config.sharegs_patch_reuse:
+                    remaining_budget = _remaining_gaussian_budget(gaussians, config)
+                    if remaining_budget <= 0:
+                        logger.warning(
+                            "Stage 7 Gaussian cap reached (%d); skipping patch reuse",
+                            config.max_gaussians,
+                        )
+                        break
                     # Use other novel cameras as source views
                     source_views = [novel_cameras[j] for j in range(len(novel_cameras)) if j != cam_idx]
                     logger.debug(
@@ -132,6 +148,7 @@ def fill_holes_iterative(
                         hole_mask,
                         source_views,
                         colmap_model,
+                        max_new_gaussians=min(config.sharegs_patch_reuse_max_new, remaining_budget),
                     )
 
         # Step 3: GS-Diff fill (if enabled)
@@ -200,7 +217,7 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
         Alpha map of shape (H, W) with values in [0, 1].
     """
     positions = gaussians["positions"]
-    opacities = gaussians["opacities"]
+    opacities = opacities_to_activated(gaussians["opacities"])
     viewmat = np.asarray(cam["viewmat"], dtype=np.float64)
     H = cam.get("height", 1024)
     W = cam.get("width", 1024)
@@ -237,6 +254,11 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
     return alpha_map
 
 
+def _remaining_gaussian_budget(gaussians: dict, config: Stage07Config) -> int:
+    """Return how many more Gaussians Stage 7 is allowed to add."""
+    return max(config.max_gaussians - int(gaussians["positions"].shape[0]), 0)
+
+
 def _cam_to_intrinsics(cam: dict) -> dict:
     """Build an intrinsics dict from a camera dict."""
     H = cam.get("height", 1024)
@@ -266,12 +288,16 @@ def _apply_gsdiff_fill(
         inpainter = create_inpainter(
             backend=config.gsdiff_backend,
             prompt=config.gsdiff_prompt,
+            validate_backend=True,
         )
     except (ImportError, RuntimeError) as exc:
-        logger.warning(
-            "GS-Diff fill skipped in round %d: inpainting backend unavailable: %s",
-            round_idx + 1, exc,
+        message = (
+            f"GS-Diff fill unavailable in round {round_idx + 1}: "
+            f"inpainting backend unavailable: {exc}"
         )
+        if config.gsdiff_strict_backend:
+            raise RuntimeError(message) from exc
+        logger.warning(message)
         return
 
     for cam_idx, cam in enumerate(novel_cameras):
