@@ -765,13 +765,12 @@ def _save_checkpoint(
 
     # Convert tensors to numpy for PLY writing
     colors_np = colors.detach().cpu().numpy()
-    # Handle SH coefficient shape: (N, K, 3) or (N, 3) or (N, 1, 3)
     if colors_np.ndim == 3:
-        colors_np = colors_np[:, 0, :]  # Use SH degree 0 for checkpoint
-    if colors_np.max() > 1:
-        colors_np = colors_np.astype(np.uint8)
-    else:
-        colors_np = (colors_np * 255).astype(np.uint8)
+        colors_np = colors_np[:, 0, :]
+    SH_C0 = 0.28209479177387814
+    if colors_np.max() > 1.5:
+        colors_np = (colors_np / 255.0 - 0.5) / SH_C0
+    colors_np = colors_np.astype(np.float32)
 
     write_ply(
         ckpt_path,

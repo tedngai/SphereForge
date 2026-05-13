@@ -58,9 +58,9 @@ VIEWER_TEMPLATE = """<!DOCTYPE html>
     <script type="importmap">
     {{
         "imports": {{
-            "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
-            "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.6.0/build/gaussian-splats-3d.module.js"
+            "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/",
+            "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
         }}
     }}
     </script>

@@ -180,17 +180,16 @@ def run_stage06(
         checkpoint_dir=checkpoint_dir,
     )
 
-    # Write optimized PLY
+    # Write optimized PLY — f_dc in SH coefficient space, opacity/scale in log space
     output_ply = output_dir / "optimized.ply"
     colors_np = final_gaussians["colors"].cpu()
-    # Handle SH coefficient shape: (N, K, 3) → use SH degree 0 (first coefficient)
     if colors_np.ndim == 3:
         colors_np = colors_np[:, 0, :]  # (N, K, 3) → (N, 3)
     colors_np = colors_np.numpy()
-    if colors_np.max() <= 1.0:
-        colors_np = (colors_np * 255).astype(np.uint8)
-    else:
-        colors_np = colors_np.astype(np.uint8)
+    SH_C0 = 0.28209479177387814
+    if colors_np.max() > 1.5:
+        colors_np = (colors_np / 255.0 - 0.5) / SH_C0
+    colors_np = colors_np.astype(np.float32)
     write_ply(
         output_ply,
         positions=final_gaussians["positions"].cpu().numpy(),
