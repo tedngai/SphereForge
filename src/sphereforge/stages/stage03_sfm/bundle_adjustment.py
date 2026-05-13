@@ -7,6 +7,7 @@ refines it with the ``bundle_adjuster`` command.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -42,7 +43,14 @@ def _run_colmap_mapper(
         image_dir,
         output_path,
     )
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                            env={
+                                **os.environ,
+                                "QT_QPA_PLATFORM": "offscreen",
+                                "PATH": "/home/tngai/.local/bin:" + os.environ.get("PATH", ""),
+                            "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:"
+                                + os.environ.get("LD_LIBRARY_PATH", ""),
+                            })
     if result.returncode != 0:
         logger.error("COLMAP mapper stderr:\n%s", result.stderr)
         raise RuntimeError(
@@ -85,7 +93,14 @@ def _run_colmap_bundle_adjuster(
         refine_focal_length,
         refine_extra_params,
     )
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                            env={
+                                **os.environ,
+                                "QT_QPA_PLATFORM": "offscreen",
+                                "PATH": "/home/tngai/.local/bin:" + os.environ.get("PATH", ""),
+                            "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:"
+                                + os.environ.get("LD_LIBRARY_PATH", ""),
+                            })
     if result.returncode != 0:
         logger.error("COLMAP bundle_adjuster stderr:\n%s", result.stderr)
         raise RuntimeError(

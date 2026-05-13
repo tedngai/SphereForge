@@ -394,19 +394,33 @@ def read_colmap_binary(path: Path) -> dict:
 
 
 def _read_cameras_binary(path: Path) -> dict[int, dict]:
-    """Read cameras.bin in COLMAP binary format."""
+    """Read cameras.bin in COLMAP binary format (v3.8+ model IDs)."""
+    _MODEL_NAMES = {
+        0: "SIMPLE_PINHOLE",
+        1: "PINHOLE",
+        2: "SIMPLE_RADIAL",
+        3: "RADIAL",
+        4: "OPENCV",
+        5: "OPENCV_FISHEYE",
+        6: "FULL_OPENCV",
+        7: "FOV",
+        8: "SIMPLE_RADIAL_FISHEYE",
+        9: "RADIAL_FISHEYE",
+        10: "THIN_PRISM_FISHEYE",
+    }
+    _MODEL_PARAMS = {
+        0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12,
+    }
     cameras: dict[int, dict] = {}
     with open(path, "rb") as f:
         num_cameras = struct.unpack("<Q", f.read(8))[0]
         for _ in range(num_cameras):
             camera_id = struct.unpack("<I", f.read(4))[0]
-            model = _read_string_binary(f)
+            model_id = struct.unpack("<i", f.read(4))[0]
             width = struct.unpack("<Q", f.read(8))[0]
             height = struct.unpack("<Q", f.read(8))[0]
-            # Number of params depends on model
-            num_params = {"PINHOLE": 4, "SIMPLE_PINHOLE": 3, "RADIAL": 4, "OPENCV": 8, "SIMPLE_RADIAL": 4}
-            # Default: read remaining known count or infer from model
-            np_ = num_params.get(model, 4)
+            model = _MODEL_NAMES.get(model_id, f"UNKNOWN_{model_id}")
+            np_ = _MODEL_PARAMS.get(model_id, 4)
             params = list(struct.unpack(f"<{np_}d", f.read(8 * np_)))
             cameras[camera_id] = {
                 "model": model,
@@ -465,8 +479,8 @@ def _read_points3d_binary(path: Path) -> dict[int, dict]:
             r, g, b = struct.unpack("<3B", f.read(3))
             error = struct.unpack("<d", f.read(8))[0]
             track_length = struct.unpack("<Q", f.read(8))[0]
-            # Skip track data: image_id (uint32) + point2D_id (uint64) per track element
-            f.read(track_length * (4 + 8))
+            # Skip track data: image_id (uint32) + point2D_idx (int32) per track element
+            f.read(track_length * 8)
             points[point3D_id] = {
                 "x": x,
                 "y": y,

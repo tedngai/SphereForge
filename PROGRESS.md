@@ -338,6 +338,249 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
   - (none)
 - **Implementation notes:** Stage 3 SfM pipeline completed
 
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:11:37.097855+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:14:51.115342+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T4.6] Task Completed
+- **Completed:** 2026-05-12T17:14:58.936134+00:00
+- **Files created:**
+  - `data/depth/frame_000014_depth.npy`
+  - `data/depth/frame_000046_depth.npy`
+  - `data/depth/frame_000062_depth.npy`
+  - `data/depth/frame_000118_depth.npy`
+  - `data/depth/frame_000126_depth.npy`
+  - `data/depth/frame_000166_depth.npy`
+  - `data/depth/frame_000184_depth.npy`
+  - `data/depth/frame_000225_depth.npy`
+  - `data/depth/frame_000270_depth.npy`
+  - `data/depth/frame_000281_depth.npy`
+  - `data/depth/frame_000305_depth.npy`
+  - `data/depth/frame_000336_depth.npy`
+  - `data/depth/frame_000361_depth.npy`
+  - `data/depth/frame_000401_depth.npy`
+  - `data/depth/frame_000447_depth.npy`
+  - `data/depth/frame_000457_depth.npy`
+  - `data/depth/frame_000508_depth.npy`
+  - `data/depth/frame_000512_depth.npy`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 4 pipeline: dense depth estimation orchestration
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:20:37.314566+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T4.6] Task Completed
+- **Completed:** 2026-05-12T17:20:45.035361+00:00
+- **Files created:**
+  - `data/depth/frame_000014_depth.npy`
+  - `data/depth/frame_000046_depth.npy`
+  - `data/depth/frame_000062_depth.npy`
+  - `data/depth/frame_000118_depth.npy`
+  - `data/depth/frame_000126_depth.npy`
+  - `data/depth/frame_000166_depth.npy`
+  - `data/depth/frame_000184_depth.npy`
+  - `data/depth/frame_000225_depth.npy`
+  - `data/depth/frame_000270_depth.npy`
+  - `data/depth/frame_000281_depth.npy`
+  - `data/depth/frame_000305_depth.npy`
+  - `data/depth/frame_000336_depth.npy`
+  - `data/depth/frame_000361_depth.npy`
+  - `data/depth/frame_000401_depth.npy`
+  - `data/depth/frame_000447_depth.npy`
+  - `data/depth/frame_000457_depth.npy`
+  - `data/depth/frame_000508_depth.npy`
+  - `data/depth/frame_000512_depth.npy`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 4 pipeline: dense depth estimation orchestration
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:24:21.416118+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T4.6] Task Completed
+- **Completed:** 2026-05-12T17:24:29.255827+00:00
+- **Files created:**
+  - `data/depth/frame_000014_depth.npy`
+  - `data/depth/frame_000046_depth.npy`
+  - `data/depth/frame_000062_depth.npy`
+  - `data/depth/frame_000118_depth.npy`
+  - `data/depth/frame_000126_depth.npy`
+  - `data/depth/frame_000166_depth.npy`
+  - `data/depth/frame_000184_depth.npy`
+  - `data/depth/frame_000225_depth.npy`
+  - `data/depth/frame_000270_depth.npy`
+  - `data/depth/frame_000281_depth.npy`
+  - `data/depth/frame_000305_depth.npy`
+  - `data/depth/frame_000336_depth.npy`
+  - `data/depth/frame_000361_depth.npy`
+  - `data/depth/frame_000401_depth.npy`
+  - `data/depth/frame_000447_depth.npy`
+  - `data/depth/frame_000457_depth.npy`
+  - `data/depth/frame_000508_depth.npy`
+  - `data/depth/frame_000512_depth.npy`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 4 pipeline: dense depth estimation orchestration
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:29:22.972309+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:36:36.520670+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T4.6] Task Completed
+- **Completed:** 2026-05-12T17:36:50.769409+00:00
+- **Files created:**
+  - `data/depth/frame_000014_depth.npy`
+  - `data/depth/frame_000046_depth.npy`
+  - `data/depth/frame_000062_depth.npy`
+  - `data/depth/frame_000118_depth.npy`
+  - `data/depth/frame_000126_depth.npy`
+  - `data/depth/frame_000166_depth.npy`
+  - `data/depth/frame_000184_depth.npy`
+  - `data/depth/frame_000225_depth.npy`
+  - `data/depth/frame_000270_depth.npy`
+  - `data/depth/frame_000281_depth.npy`
+  - `data/depth/frame_000305_depth.npy`
+  - `data/depth/frame_000336_depth.npy`
+  - `data/depth/frame_000361_depth.npy`
+  - `data/depth/frame_000401_depth.npy`
+  - `data/depth/frame_000447_depth.npy`
+  - `data/depth/frame_000457_depth.npy`
+  - `data/depth/frame_000508_depth.npy`
+  - `data/depth/frame_000512_depth.npy`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 4 pipeline: dense depth estimation orchestration
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:42:17.807400+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:43:52.439881+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:46:35.193829+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:50:11.681288+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:51:08.105551+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:53:05.101037+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T3.6] Task Completed
+- **Completed:** 2026-05-12T17:54:03.555139+00:00
+- **Files created:**
+  - `data/colmap/database.db`
+  - `data/colmap/sparse`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 3 SfM pipeline completed
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T03:40:34.088362+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 12206801 Gaussians, 12111430 added
+
 ## Statistics
 
 - **Total tasks:** 94 (94 DONE, 0 remaining)

@@ -1,0 +1,28 @@
+stage05:
+  stride: 16
+  stride_low_confidence: 32
+  dedup_distance: "0.05"
+
+stage06:
+  iterations: 3000
+  sh_degree: 2
+  densify_until_iter: 2000
+  densify_every: 300
+  prune_every: 1000
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.01
+  d_normal_weight: 0.0
+  depth_reg_weight: 0.0
+  use_intersection_depth: false
+  checkpoint_every: 1000
+
+stage07:
+  refine_backend: "sharegs_gsdiff"
+  refine_cameras: 12
+  refine_rounds: 1
+  sharegs_enabled: true
+  sharegs_optimize_iters: 200
+
+stage08:
+  export_format: ["ply", "html"]
+  compact_box_culling: true

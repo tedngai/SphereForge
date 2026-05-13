@@ -34,10 +34,12 @@ from sphereforge.stages.stage06_optimization.d_normal_loss import (
     d_normal_loss,
 )
 from sphereforge.stages.stage06_optimization.densification import (
-    clone_under_reconstructed,
     compute_eas,
-    long_axis_split,
     should_densify,
+)
+from sphereforge.stages.stage06_optimization.split_clone import (
+    clone_under_reconstructed,
+    long_axis_split,
 )
 from sphereforge.stages.stage06_optimization.erp_loss import (
     erp_weighted_loss,
@@ -345,30 +347,29 @@ def expand_sh_degree(colors: Tensor, current_degree: int, target_degree: int) ->
     New coefficients are initialized to zero.
 
     Args:
-        colors: Current SH coefficients (N, K).
+        colors: Current SH coefficients (N, K, 3) in gsplat format.
         current_degree: Current SH degree (0-3).
         target_degree: Target SH degree (must be >= current_degree).
 
     Returns:
-        Expanded SH coefficients (N, K_new).
+        Expanded SH coefficients (N, K_new, 3).
     """
     if target_degree <= current_degree:
         return colors
 
     n = colors.shape[0]
-    coeffs_per_channel = [1, 3, 5, 7]  # additional coeffs per degree
-    total_per_channel = sum(coeffs_per_channel[: target_degree + 1])
-    total_coeffs = total_per_channel * 3  # 3 channels (RGB)
+    new_k = (target_degree + 1) ** 2
+    current_k = colors.shape[1]
 
-    new_colors = torch.zeros(n, total_coeffs, device=colors.device, dtype=colors.dtype)
-    new_colors[:, : colors.shape[1]] = colors
+    new_colors = torch.zeros(n, new_k, 3, device=colors.device, dtype=colors.dtype)
+    new_colors[:, :current_k, :] = colors
 
     logger.debug(
-        "Expanded SH from degree %d to %d: %d -> %d coefficients",
+        "Expanded SH from degree %d to %d: (%d,%d,%d) -> (%d,%d,%d)",
         current_degree,
         target_degree,
-        colors.shape[1],
-        total_coeffs,
+        n, current_k, 3,
+        n, new_k, 3,
     )
     return new_colors
 
@@ -424,14 +425,19 @@ def train_gaussians(
 
     # Move initial Gaussians to device
     positions = initial_gaussians["positions"].to(device).requires_grad_(True)
-    colors = initial_gaussians["colors"].to(device).requires_grad_(True)
+    colors = initial_gaussians["colors"].to(device)
     opacities = initial_gaussians["opacities"].to(device).requires_grad_(True)
     scales = initial_gaussians["scales"].to(device).requires_grad_(True)
     rotations = initial_gaussians["rotations"].to(device).requires_grad_(True)
 
+    # Ensure colors are in gsplat-compatible shape (N, SH_K, 3)
+    if colors.ndim == 2:
+        colors = colors.unsqueeze(1)  # (N, 3) → (N, 1, 3)
+    colors = colors.clone().detach().requires_grad_(True)
+
     # Determine current SH degree from color dimension
-    n_sh_per_channel = colors.shape[1] // 3
-    current_sh_degree = {1: 0, 4: 1, 9: 2, 16: 3}.get(n_sh_per_channel, 0)
+    n_sh_coefs = colors.shape[1]  # K in (N, K, 3)
+    current_sh_degree = int(np.sqrt(n_sh_coefs)) - 1 if n_sh_coefs >= 1 else 0
 
     # Determine target SH degree from config
     target_sh_degree = config.sh_degree
@@ -509,6 +515,16 @@ def train_gaussians(
             sh_schedule_step = (iteration // 2500)
             sh_degree_to_use = min(sh_schedule_step, target_sh_degree)
             sh_degree_to_use = max(sh_degree_to_use, current_sh_degree)
+            # Expand SH coefficients BEFORE rendering if schedule advanced
+            if sh_degree_to_use > active_sh_degree:
+                with torch.no_grad():
+                    colors = expand_sh_degree(colors, active_sh_degree, sh_degree_to_use)
+                    active_sh_degree = sh_degree_to_use
+                    _update_optimizer(optimizer, positions, scales, rotations, opacities, colors)
+                    logger.info(
+                        "SH degree expanded from %d to %d at iteration %d",
+                        current_sh_degree, active_sh_degree, iteration,
+                    )
         else:
             sh_degree_to_use = active_sh_degree
 
@@ -548,10 +564,15 @@ def train_gaussians(
 
         # 2. Scale + flattening loss (prevent oversized polar Gaussians)
         if config.erp_scale_flattening_loss > 0:
+            # Compute per-Gaussian latitude from 3D positions
+            pos_norms = torch.norm(positions, dim=1).clamp(min=1e-8)
+            gaussian_latitudes = torch.asin(
+                positions[:, 1] / pos_norms
+            ).clamp(-math.pi / 2, math.pi / 2)
             sf_loss = scale_flattening_loss(
                 scales=scales_activated,
                 positions=positions,
-                latitudes=latitudes,
+                latitudes=gaussian_latitudes,
             )
             total_loss = total_loss + config.erp_scale_flattening_loss * sf_loss
 
@@ -596,8 +617,8 @@ def train_gaussians(
                     small_mask = densify_mask & ~large_mask
 
                     if large_mask.any():
-                        positions, scales, rotations, opacities = long_axis_split(
-                            positions, scales, rotations, opacities, large_mask,
+                        positions, scales, rotations, opacities, colors = long_axis_split(
+                            positions, scales, rotations, opacities, colors, large_mask,
                         )
                         # Re-create optimizer for new parameter sizes
                         _update_optimizer(
@@ -605,8 +626,8 @@ def train_gaussians(
                         )
 
                     if small_mask.any():
-                        positions, opacities = clone_under_reconstructed(
-                            positions, opacities, small_mask,
+                        positions, scales, rotations, opacities, colors = clone_under_reconstructed(
+                            positions, scales, rotations, opacities, colors, small_mask,
                         )
                         _update_optimizer(
                             optimizer, positions, scales, rotations, opacities, colors,
@@ -622,30 +643,30 @@ def train_gaussians(
                     mse = ((rendered_image - target_image) ** 2).mean()
                     current_psnr = 10 * torch.log10(1.0 / (mse + 1e-8)).item()
 
-                # Prune
-                kept_mask = rap_prune(
+                # Prune - get keep_mask from rap_prune (positions/scales/opacities returned are activated, ignore them)
+                _, _, _, keep_mask = rap_prune(
                     positions, scales_activated, opacities_activated,
                     min_opacity=0.005,
                 )
 
                 # Store pruned for potential recovery
-                pruned_positions = positions[~kept_mask]
+                pruned_positions = positions[~keep_mask]
                 if pruned_positions.shape[0] > 0:
                     pruning_buffer.store(
                         pruned_positions,
-                        scales[~kept_mask],
-                        rotations[~kept_mask],
-                        opacities[~kept_mask],
-                        colors[~kept_mask],
+                        scales[~keep_mask],
+                        rotations[~keep_mask],
+                        opacities[~keep_mask],
+                        colors[~keep_mask],
                         step=iteration,
                     )
 
-                # Apply mask
-                positions = positions[kept_mask]
-                scales = scales[kept_mask]
-                rotations = rotations[kept_mask]
-                opacities = opacities[kept_mask]
-                colors = colors[kept_mask]
+                # Apply mask to all raw parameters
+                positions = positions[keep_mask]
+                scales = scales[keep_mask]
+                rotations = rotations[keep_mask]
+                opacities = opacities[keep_mask]
+                colors = colors[keep_mask]
 
                 # Check recovery
                 recovered = pruning_buffer.recover_if_needed(
@@ -664,18 +685,6 @@ def train_gaussians(
 
                 prev_psnr = current_psnr
                 n_gaussians = positions.shape[0]
-
-        # ---- SH expansion ----
-        # Expand SH coefficients when schedule reaches target degree
-        if iteration == 7500 and active_sh_degree < target_sh_degree:
-            with torch.no_grad():
-                colors = expand_sh_degree(colors, active_sh_degree, target_sh_degree)
-                active_sh_degree = target_sh_degree
-                _update_optimizer(optimizer, positions, scales, rotations, opacities, colors)
-                logger.info(
-                    "SH degree expanded from %d to %d at iteration %d",
-                    current_sh_degree, target_sh_degree, iteration,
-                )
 
         # ---- Checkpointing ----
         if (
@@ -756,6 +765,9 @@ def _save_checkpoint(
 
     # Convert tensors to numpy for PLY writing
     colors_np = colors.detach().cpu().numpy()
+    # Handle SH coefficient shape: (N, K, 3) or (N, 3) or (N, 1, 3)
+    if colors_np.ndim == 3:
+        colors_np = colors_np[:, 0, :]  # Use SH degree 0 for checkpoint
     if colors_np.max() > 1:
         colors_np = colors_np.astype(np.uint8)
     else:

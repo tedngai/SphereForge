@@ -39,7 +39,7 @@ def run_stage06(
     Returns:
         Path to the optimized .ply file.
     """
-    from sphereforge.common.colmap_helpers import parse_cameras_txt, parse_images_txt
+    from sphereforge.common.colmap_helpers import parse_cameras_txt, parse_images_txt, read_colmap_binary
     from sphereforge.stages.stage06_optimization.training_loop import train_gaussians
 
     output_dir = Path(output_dir)
@@ -58,16 +58,31 @@ def run_stage06(
         "rotations": torch.from_numpy(gaussians_ply["rotations"]).float(),
     }
 
-    # Load COLMAP model
-    cameras_path = colmap_dir / "cameras.txt"
-    images_path = colmap_dir / "images.txt"
+    # Load COLMAP model — check common subdirectory "0/" first
+    for candidate in [colmap_dir / "0", colmap_dir]:
+        cameras_path = candidate / "cameras.txt"
+        cameras_bin = candidate / "cameras.bin"
+        if cameras_path.exists() or cameras_bin.exists():
+            colmap_model_dir = candidate
+            break
+    else:
+        colmap_model_dir = colmap_dir
 
+    # Load cameras and images (try text first, fall back to binary)
     cameras = {}
     images_dict = {}
-    if cameras_path.exists():
-        cameras = parse_cameras_txt(cameras_path)
-    if images_path.exists():
-        images_dict = parse_images_txt(images_path)
+    cameras_txt = colmap_model_dir / "cameras.txt"
+    images_txt = colmap_model_dir / "images.txt"
+    cameras_bin = colmap_model_dir / "cameras.bin"
+    images_bin = colmap_model_dir / "images.bin"
+    if cameras_txt.exists():
+        cameras = parse_cameras_txt(cameras_txt)
+    elif cameras_bin.exists():
+        cameras = read_colmap_binary(cameras_bin)
+    if images_txt.exists():
+        images_dict = parse_images_txt(images_txt)
+    elif images_bin.exists():
+        images_dict = read_colmap_binary(images_bin)
 
     # Build training views
     training_views = []
@@ -85,23 +100,52 @@ def run_stage06(
         viewmat[:3, :3] = R
         viewmat[:3, 3] = t
 
-        # Load target image
-        img_path = colmap_dir / "images" / img_data["name"]
-        if img_path.exists():
+        # Load target image — search in multiple possible locations
+        name = img_data["name"]
+        # Strip ``images/`` or ``masks/`` prefix if present (COLMAP convention)
+        clean_name = name.replace("images/", "").replace("masks/", "")
+        possible_img_paths = [
+            colmap_dir.parent.parent / "cubemaps" / name,
+            colmap_dir.parent.parent / "cubemaps" / clean_name,
+            colmap_dir.parent.parent / "cubemaps" / "images" / clean_name,
+            colmap_dir / "images" / name,
+        ]
+        img_path = None
+        for p in possible_img_paths:
+            if p.exists():
+                img_path = p
+                break
+        if img_path is not None:
             from sphereforge.common.io import read_image
             target_image = read_image(img_path)  # (H, W, 3) uint8
             target_image = torch.from_numpy(target_image).float().permute(2, 0, 1) / 255.0  # (3, H, W)
         else:
-            logger.warning("Image %s not found, using placeholder", img_path)
+            logger.warning("Image %s not found in any expected location, using placeholder", name)
             target_image = torch.rand(3, cam["height"], cam["width"])
 
-        # Load target depth
-        depth_path = depth_dir / img_data["name"].replace(".png", ".npy")
-        if depth_path.exists():
+        # Load target depth — try face name first, then ERP frame name
+        import re
+        depth_name = name.replace(".png", ".npy")
+        # Strip images/ prefix if present
+        clean_depth_name = depth_name.replace("images/", "")
+        # Possible depth file paths
+        possible_depth_paths = [
+            depth_dir / depth_name,
+            depth_dir / clean_depth_name,
+            # Try ERP frame name (strip face suffix, add _depth suffix)
+            depth_dir / re.sub(r"_(left|right|front|back|top|bottom)\.npy$", "_depth.npy", clean_depth_name),
+            depth_dir / re.sub(r"images/", "", re.sub(r"_(left|right|front|back|top|bottom)\.npy$", "_depth.npy", depth_name)),
+        ]
+        depth_path = None
+        for dp in possible_depth_paths:
+            if dp.exists():
+                depth_path = dp
+                break
+        if depth_path is not None:
             target_depth = np.load(str(depth_path)).astype(np.float32)
             target_depth = torch.from_numpy(target_depth)
         else:
-            logger.warning("Depth %s not found, using placeholder", depth_path)
+            logger.warning("Depth for %s not found in any expected location, using placeholder", name)
             target_depth = torch.rand(cam["height"], cam["width"]) * 10.0
 
         # Compute FOV from camera intrinsics
@@ -138,14 +182,22 @@ def run_stage06(
 
     # Write optimized PLY
     output_ply = output_dir / "optimized.ply"
+    colors_np = final_gaussians["colors"].cpu()
+    # Handle SH coefficient shape: (N, K, 3) → use SH degree 0 (first coefficient)
+    if colors_np.ndim == 3:
+        colors_np = colors_np[:, 0, :]  # (N, K, 3) → (N, 3)
+    colors_np = colors_np.numpy()
+    if colors_np.max() <= 1.0:
+        colors_np = (colors_np * 255).astype(np.uint8)
+    else:
+        colors_np = colors_np.astype(np.uint8)
     write_ply(
         output_ply,
-        positions=final_gaussians["positions"].numpy(),
-        colors=final_gaussians["colors"].numpy().astype(np.uint8)
-            if final_gaussians["colors"].max() > 1 else (final_gaussians["colors"].numpy() * 255).astype(np.uint8),
-        opacities=final_gaussians["opacities"].numpy(),
-        scales=final_gaussians["scales"].numpy(),
-        rotations=final_gaussians["rotations"].numpy(),
+        positions=final_gaussians["positions"].cpu().numpy(),
+        colors=colors_np,
+        opacities=final_gaussians["opacities"].cpu().numpy(),
+        scales=final_gaussians["scales"].cpu().numpy(),
+        rotations=final_gaussians["rotations"].cpu().numpy(),
     )
 
     logger.info("Stage 6 complete: %s (%d Gaussians)", output_ply, final_gaussians["positions"].shape[0])

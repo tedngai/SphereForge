@@ -7,6 +7,7 @@ to establish 2D-2D correspondences between images in the database.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -32,7 +33,14 @@ def _run_colmap_matcher(matcher_name: str, database_path: Path, extra_args: list
         cmd.extend(extra_args)
 
     logger.info("Running COLMAP %s on database %s", matcher_name, database_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                            env={
+                                **os.environ,
+                                "QT_QPA_PLATFORM": "offscreen",
+                                "PATH": "/home/tngai/.local/bin:" + os.environ.get("PATH", ""),
+                            "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:"
+                                + os.environ.get("LD_LIBRARY_PATH", ""),
+                            })
     if result.returncode != 0:
         logger.error("COLMAP %s stderr:\n%s", matcher_name, result.stderr)
         raise RuntimeError(

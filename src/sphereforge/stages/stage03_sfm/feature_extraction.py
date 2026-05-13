@@ -7,6 +7,7 @@ keypoints and write them into a COLMAP database.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -55,7 +56,7 @@ def run_feature_extraction(
     """
     _check_colmap_installed()
 
-    root_sift_flag = 1 if feature_type == "root_sift" else 0
+    descriptor_norm = "l1_root" if feature_type == "root_sift" else "l2"
 
     cmd: list[str] = [
         "colmap", "feature_extractor",
@@ -63,7 +64,7 @@ def run_feature_extraction(
         "--image_path", str(image_dir),
         "--ImageReader.camera_model", camera_model,
         "--ImageReader.single_camera", "1",
-        "--SiftExtraction.root_sift", str(root_sift_flag),
+        "--descriptor_normalization", descriptor_norm,
     ]
 
     # If mask_dir is provided, build an image list file with only the
@@ -106,7 +107,13 @@ def run_feature_extraction(
     )
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        env = {
+            **os.environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            "PATH": "/home/tngai/.local/bin:" + os.environ.get("PATH", ""),
+                            "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
+        }
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         if result.returncode != 0:
             logger.error("COLMAP feature_extractor stderr:\n%s", result.stderr)
             raise RuntimeError(

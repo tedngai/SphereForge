@@ -35,8 +35,9 @@ def long_axis_split(
     scales: torch.Tensor,
     rotations: torch.Tensor,
     opacities: torch.Tensor,
+    colors: torch.Tensor,
     mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Split masked Gaussians along their longest scale axis.
 
     For each Gaussian where *mask* is ``True``, the function:
@@ -65,7 +66,7 @@ def long_axis_split(
         mask: Boolean mask of Gaussians to split, shape ``(N,)``.
 
     Returns:
-        Tuple ``(positions, scales, rotations, opacities)`` with the split
+        Tuple ``(positions, scales, rotations, opacities, colors)`` with the split
         Gaussians replacing their parents.  The total count changes from
         ``N`` to ``N - num_split + 2 * num_split = N + num_split``.
     """
@@ -77,7 +78,7 @@ def long_axis_split(
 
     if num_split == 0:
         logger.debug("long_axis_split: no Gaussians to split")
-        return positions, scales, rotations, opacities
+        return positions, scales, rotations, opacities, colors
 
     logger.debug("long_axis_split: splitting %d / %d Gaussians", num_split, N)
 
@@ -141,6 +142,10 @@ def long_axis_split(
     op_child1 = op_split.clone()
     op_child2 = op_split.clone()
 
+    # Child colors: inherit from parent
+    col_child1 = colors[split_indices].clone()
+    col_child2 = colors[split_indices].clone()
+
     # --- Step 5: Assemble output ---
     # Kept Gaussians + child1 + child2
     if keep_indices.shape[0] > 0:
@@ -156,11 +161,15 @@ def long_axis_split(
         new_opacities = torch.cat(
             [opacities[keep_indices], op_child1, op_child2], dim=0
         )
+        new_colors = torch.cat(
+            [colors[keep_indices], col_child1, col_child2], dim=0
+        )
     else:
         new_positions = torch.cat([pos_child1, pos_child2], dim=0)
         new_scales = torch.cat([scale_child1, scale_child2], dim=0)
         new_rotations = torch.cat([rot_child1, rot_child2], dim=0)
         new_opacities = torch.cat([op_child1, op_child2], dim=0)
+        new_colors = torch.cat([col_child1, col_child2], dim=0)
 
     logger.debug(
         "long_axis_split: N=%d → N'=%d (split %d, kept %d)",
@@ -170,14 +179,17 @@ def long_axis_split(
         keep_indices.shape[0],
     )
 
-    return new_positions, new_scales, new_rotations, new_opacities
+    return new_positions, new_scales, new_rotations, new_opacities, new_colors
 
 
 def clone_under_reconstructed(
     positions: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
     opacities: torch.Tensor,
+    colors: torch.Tensor,
     mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Clone masked Gaussians (small ones in under-reconstructed regions).
 
     Cloning duplicates a Gaussian at its current position but with half
@@ -187,34 +199,40 @@ def clone_under_reconstructed(
 
     Args:
         positions: Gaussian means, shape ``(N, 3)``.
+        scales: Gaussian scales, shape ``(N, 3)``.
+        rotations: Gaussian rotation quaternions, shape ``(N, 4)``.
         opacities: Gaussian opacities, shape ``(N,)``.
+        colors: Gaussian SH coefficients, shape ``(N, K, 3)`` or ``(N, 3)``.
         mask: Boolean mask of Gaussians to clone, shape ``(N,)``.
 
     Returns:
-        Tuple ``(positions, opacities)`` with cloned Gaussians appended.
-        The total count changes from ``N`` to ``N + num_cloned``.
+        Tuple ``(positions, scales, rotations, opacities, colors)`` with cloned
+        Gaussians appended. Total count changes from ``N`` to ``N + num_cloned``.
     """
     num_clone = mask.sum().item()
     N = positions.shape[0]
 
     if num_clone == 0:
         logger.debug("clone_under_reconstructed: no Gaussians to clone")
-        return positions, opacities
+        return positions, scales, rotations, opacities, colors
 
     clone_indices = mask.nonzero(as_tuple=True)[0]
 
-    # Clone positions: same as parent
+    # Clone positions, scales, rotations: same as parent
     pos_clone = positions[clone_indices]  # (K, 3)
+    scales_clone = scales[clone_indices]  # (K, 3)
+    rot_clone = rotations[clone_indices]  # (K, 4)
+    col_clone = colors[clone_indices]  # (K, ...)
 
-    # Clone opacity: half of parent
+    # Clone opacity: half of parent, and parent's opacity also halved
     op_clone = opacities[clone_indices] * 0.5  # (K,)
-
-    # Reduce parent opacity by half as well (standard 3DGS convention)
-    # This ensures total "mass" is conserved
     new_opacities = opacities.clone()
     new_opacities[clone_indices] = opacities[clone_indices] * 0.5
 
     new_positions = torch.cat([positions, pos_clone], dim=0)
+    new_scales = torch.cat([scales, scales_clone], dim=0)
+    new_rotations = torch.cat([rotations, rot_clone], dim=0)
+    new_colors = torch.cat([colors, col_clone], dim=0)
     new_opacities = torch.cat([new_opacities, op_clone], dim=0)
 
     logger.debug(
@@ -224,4 +242,4 @@ def clone_under_reconstructed(
         num_clone,
     )
 
-    return new_positions, new_opacities
+    return new_positions, new_scales, new_rotations, new_opacities, new_colors
