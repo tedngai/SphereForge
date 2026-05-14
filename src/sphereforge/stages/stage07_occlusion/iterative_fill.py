@@ -106,11 +106,13 @@ def fill_holes_iterative(
 
         # Step 2: ShareGS fill
         if config.sharegs_enabled:
+            hole_counts = [int(np.sum(mask)) for mask in per_cam_masks]
             for cam_idx, (cam, hole_mask) in enumerate(zip(novel_cameras, per_cam_masks, strict=False)):
                 if not np.any(hole_mask):
                     continue
 
-                remaining_camera_slots = max(len(novel_cameras) - cam_idx, 1)
+                camera_holes = hole_counts[cam_idx]
+                remaining_holes = sum(hole_counts[cam_idx:])
 
                 remaining_budget = _remaining_gaussian_budget(gaussians, config)
                 if remaining_budget <= 0:
@@ -119,6 +121,13 @@ def fill_holes_iterative(
                         config.max_gaussians,
                     )
                     break
+
+                camera_budget = _allocate_camera_budget(
+                    remaining_budget=remaining_budget,
+                    camera_holes=camera_holes,
+                    remaining_holes=remaining_holes,
+                )
+                camera_added = 0
 
                 intrinsics = _cam_to_intrinsics(cam)
 
@@ -130,7 +139,21 @@ def fill_holes_iterative(
                             config.max_gaussians,
                         )
                         break
-                    camera_budget = max(1, remaining_budget // remaining_camera_slots)
+                    reserved_patch_budget = 0
+                    if config.sharegs_patch_reuse:
+                        reserved_patch_budget = max(128, camera_budget // 8)
+                        reserved_patch_budget = min(
+                            reserved_patch_budget,
+                            config.sharegs_patch_reuse_max_new,
+                            remaining_budget,
+                        )
+                    homogenize_budget = min(
+                        max(camera_budget - reserved_patch_budget, 0),
+                        remaining_budget,
+                    )
+                    if homogenize_budget <= 0:
+                        homogenize_budget = min(camera_budget, remaining_budget)
+                    n_before = int(gaussians["positions"].shape[0])
                     logger.debug(
                         "Round %d, cam %d: ShareGS homogenization", round_idx + 1, cam_idx
                     )
@@ -139,8 +162,9 @@ def fill_holes_iterative(
                         hole_mask,
                         cam["viewmat"],
                         intrinsics,
-                        max_new_gaussians=camera_budget,
+                        max_new_gaussians=homogenize_budget,
                     )
+                    camera_added += int(gaussians["positions"].shape[0]) - n_before
 
                 if config.sharegs_patch_reuse:
                     remaining_budget = _remaining_gaussian_budget(gaussians, config)
@@ -150,7 +174,10 @@ def fill_holes_iterative(
                             config.max_gaussians,
                         )
                         break
-                    camera_budget = max(1, remaining_budget // remaining_camera_slots)
+                    patch_budget = max(camera_budget - camera_added, 128)
+                    patch_budget = min(config.sharegs_patch_reuse_max_new, patch_budget, remaining_budget)
+                    if patch_budget <= 0:
+                        continue
                     # Use other novel cameras as source views
                     source_views = [novel_cameras[j] for j in range(len(novel_cameras)) if j != cam_idx]
                     logger.debug(
@@ -165,7 +192,7 @@ def fill_holes_iterative(
                         cam,
                         source_views,
                         colmap_model,
-                        max_new_gaussians=min(config.sharegs_patch_reuse_max_new, camera_budget),
+                        max_new_gaussians=patch_budget,
                     )
 
         # Step 3: GS-Diff fill (if enabled)
@@ -284,6 +311,13 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
 def _remaining_gaussian_budget(gaussians: dict, config: Stage07Config) -> int:
     """Return how many more Gaussians Stage 7 is allowed to add."""
     return max(config.max_gaussians - int(gaussians["positions"].shape[0]), 0)
+
+
+def _allocate_camera_budget(remaining_budget: int, camera_holes: int, remaining_holes: int) -> int:
+    """Allocate Stage 7 growth budget proportional to current hole severity."""
+    if remaining_budget <= 0 or camera_holes <= 0 or remaining_holes <= 0:
+        return 0
+    return max(1, int(round(remaining_budget * (camera_holes / remaining_holes))))
 
 
 def _cam_to_intrinsics(cam: dict) -> dict:

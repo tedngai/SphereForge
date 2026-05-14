@@ -619,6 +619,23 @@ class TestIterativeFill:
         alpha = _approximate_alpha_render(gaussians, cam)
         assert int((alpha > 0).sum()) > 1
 
+    def test_allocate_camera_budget_tracks_hole_severity(self) -> None:
+        """Cameras with more holes should receive a larger share of the budget."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _allocate_camera_budget
+
+        large = _allocate_camera_budget(remaining_budget=100, camera_holes=80, remaining_holes=100)
+        small = _allocate_camera_budget(remaining_budget=100, camera_holes=20, remaining_holes=100)
+
+        assert large > small
+        assert large == 80
+        assert small == 20
+
+    def test_allocate_camera_budget_minimum_one_when_active(self) -> None:
+        """Nonzero hole counts still get a minimal budget share."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _allocate_camera_budget
+
+        assert _allocate_camera_budget(remaining_budget=5, camera_holes=1, remaining_holes=100) == 1
+
 
 # ===================================================================
 # T7.7 — EscherNet stub
