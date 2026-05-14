@@ -790,6 +790,15 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
   - (none)
 - **Implementation notes:** Stage 7 pipeline complete: 1499999 Gaussians, 511143 added
 
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-14T02:13:55.075771+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1500000 Gaussians, 511144 added
+
 ## Statistics
 
 - **Total tasks:** 94 (94 DONE, 0 remaining)

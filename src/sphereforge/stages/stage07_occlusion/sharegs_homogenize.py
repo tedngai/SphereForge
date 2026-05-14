@@ -111,7 +111,7 @@ def homogenize_gaussians(
 
     # Fill every pixel with the nearest projected Gaussian assignment so hole
     # pixels can clone from the closest actually visible source Gaussian.
-    _seed_dist, nearest_seed_yx = distance_transform_edt(~seed_mask, return_indices=True)
+    seed_dist, nearest_seed_yx = distance_transform_edt(~seed_mask, return_indices=True)
     nearest_gauss_idx = gauss_idx_map[nearest_seed_yx[0], nearest_seed_yx[1]]
 
     # For hole pixels, determine which Gaussian to clone
@@ -130,8 +130,13 @@ def homogenize_gaussians(
     stride = max(4, round(median_footprint * 0.5))
     stride = min(stride, max(H, W) // 16)
 
-    hole_ys_sub = hole_ys[::stride]
-    hole_xs_sub = hole_xs[::stride]
+    hole_distances = seed_dist[hole_ys, hole_xs]
+    hole_order = np.argsort(hole_distances)[::-1]
+    ordered_hole_ys = hole_ys[hole_order]
+    ordered_hole_xs = hole_xs[hole_order]
+
+    hole_ys_sub = ordered_hole_ys[::stride]
+    hole_xs_sub = ordered_hole_xs[::stride]
     if max_new_gaussians is not None and len(hole_ys_sub) > max_new_gaussians:
         hole_ys_sub = hole_ys_sub[:max_new_gaussians]
         hole_xs_sub = hole_xs_sub[:max_new_gaussians]
