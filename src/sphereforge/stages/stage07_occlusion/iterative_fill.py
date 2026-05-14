@@ -13,10 +13,14 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+from scipy.ndimage import maximum_filter
 
-from sphereforge.common.gaussian_parameters import opacities_to_activated
+from sphereforge.common.gaussian_parameters import opacities_to_activated, scales_to_activated
 from sphereforge.stages.stage07_occlusion.hole_detection import (
     detect_holes,
+)
+from sphereforge.stages.stage07_occlusion.projection import (
+    world_to_camera_with_positive_depth,
 )
 from sphereforge.stages.stage07_occlusion.sharegs_homogenize import homogenize_gaussians
 from sphereforge.stages.stage07_occlusion.sharegs_reuse import reuse_patches
@@ -106,6 +110,8 @@ def fill_holes_iterative(
                 if not np.any(hole_mask):
                     continue
 
+                remaining_camera_slots = max(len(novel_cameras) - cam_idx, 1)
+
                 remaining_budget = _remaining_gaussian_budget(gaussians, config)
                 if remaining_budget <= 0:
                     logger.warning(
@@ -117,6 +123,14 @@ def fill_holes_iterative(
                 intrinsics = _cam_to_intrinsics(cam)
 
                 if config.sharegs_homogenization:
+                    remaining_budget = _remaining_gaussian_budget(gaussians, config)
+                    if remaining_budget <= 0:
+                        logger.warning(
+                            "Stage 7 Gaussian cap reached (%d); skipping homogenization",
+                            config.max_gaussians,
+                        )
+                        break
+                    camera_budget = max(1, remaining_budget // remaining_camera_slots)
                     logger.debug(
                         "Round %d, cam %d: ShareGS homogenization", round_idx + 1, cam_idx
                     )
@@ -125,6 +139,7 @@ def fill_holes_iterative(
                         hole_mask,
                         cam["viewmat"],
                         intrinsics,
+                        max_new_gaussians=camera_budget,
                     )
 
                 if config.sharegs_patch_reuse:
@@ -135,6 +150,7 @@ def fill_holes_iterative(
                             config.max_gaussians,
                         )
                         break
+                    camera_budget = max(1, remaining_budget // remaining_camera_slots)
                     # Use other novel cameras as source views
                     source_views = [novel_cameras[j] for j in range(len(novel_cameras)) if j != cam_idx]
                     logger.debug(
@@ -146,9 +162,10 @@ def fill_holes_iterative(
                     gaussians = reuse_patches(
                         gaussians,
                         hole_mask,
+                        cam,
                         source_views,
                         colmap_model,
-                        max_new_gaussians=min(config.sharegs_patch_reuse_max_new, remaining_budget),
+                        max_new_gaussians=min(config.sharegs_patch_reuse_max_new, camera_budget),
                     )
 
         # Step 3: GS-Diff fill (if enabled)
@@ -218,6 +235,7 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
     """
     positions = gaussians["positions"]
     opacities = opacities_to_activated(gaussians["opacities"])
+    scales = scales_to_activated(gaussians["scales"])
     viewmat = np.asarray(cam["viewmat"], dtype=np.float64)
     H = cam.get("height", 1024)
     W = cam.get("width", 1024)
@@ -227,11 +245,8 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
     fy = fx
     cx, cy = W / 2.0, H / 2.0
 
-    R = viewmat[:3, :3]
-    t = viewmat[:3, 3]
-    cam_pos = (R @ positions.T + t[:, None]).T
-    z = cam_pos[:, 2]
-    visible = z > 1e-6
+    cam_pos, depth, _forward_sign = world_to_camera_with_positive_depth(positions, viewmat)
+    visible = depth > 1e-6
 
     alpha_map = np.zeros((H, W), dtype=np.float32)
 
@@ -239,16 +254,28 @@ def _approximate_alpha_render(gaussians: dict, cam: dict) -> np.ndarray:
         return alpha_map
 
     vis_cam = cam_pos[visible]
+    vis_depth = depth[visible]
     vis_opa = opacities[visible]
+    vis_scales = scales[visible]
 
-    px = (vis_cam[:, 0] / vis_cam[:, 2]) * fx + cx
-    py = (vis_cam[:, 1] / vis_cam[:, 2]) * fy + cy
+    px = (vis_cam[:, 0] / vis_depth) * fx + cx
+    py = (vis_cam[:, 1] / vis_depth) * fy + cy
 
     px_int = np.clip(np.round(px).astype(int), 0, W - 1)
     py_int = np.clip(np.round(py).astype(int), 0, H - 1)
 
     # Simple splat: accumulate alpha
     np.add.at(alpha_map, (py_int, px_int), vis_opa)
+
+    projected_footprints = np.mean(vis_scales, axis=1) * fx / np.maximum(vis_depth, 1e-6)
+    if projected_footprints.size > 0:
+        # Approximate Gaussian footprint with a cheap fixed-radius dilation
+        # rather than one-pixel point stamps; this keeps hole coverage closer
+        # to what the actual splat renderer would report.
+        dilation_radius = int(np.clip(np.log2(np.percentile(projected_footprints, 50) + 1.0), 1, 8))
+        if dilation_radius > 0:
+            alpha_map = maximum_filter(alpha_map, size=2 * dilation_radius + 1, mode="nearest")
+
     alpha_map = np.clip(alpha_map, 0, 1)
 
     return alpha_map

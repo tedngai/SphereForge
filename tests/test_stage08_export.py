@@ -291,6 +291,21 @@ class TestMeshExtraction:
 class TestPipeline:
     """Tests for Stage 8 pipeline."""
 
+    def test_resolve_max_scale_ratio(self):
+        from sphereforge.stages.stage08_export.pipeline import _resolve_max_scale_ratio
+
+        assert _resolve_max_scale_ratio("auto") == 0.1
+        assert _resolve_max_scale_ratio("0.25") == 0.25
+
+    def test_resolve_max_scale_ratio_rejects_invalid(self):
+        from sphereforge.stages.stage08_export.pipeline import _resolve_max_scale_ratio
+
+        with pytest.raises(ValueError, match="stage08.max_scale"):
+            _resolve_max_scale_ratio("0")
+
+        with pytest.raises(ValueError, match="Invalid stage08.max_scale"):
+            _resolve_max_scale_ratio("huge")
+
     def test_exports_ply_by_default(self, sample_ply, tmp_path):
         from sphereforge.config import Stage08Config
         from sphereforge.stages.stage08_export.pipeline import run_stage08

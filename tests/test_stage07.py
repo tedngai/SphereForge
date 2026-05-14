@@ -403,6 +403,24 @@ class TestShareGSHomogenize:
         for key in gaussians:
             assert key in result, f"Missing key: {key}"
 
+    def test_respects_max_new_gaussians(self) -> None:
+        """Homogenization should honor an explicit per-call growth cap."""
+        from sphereforge.stages.stage07_occlusion.sharegs_homogenize import homogenize_gaussians
+
+        gaussians = self._make_gaussians(50)
+        viewmat, intrinsics = self._make_camera(np.array([0.0, 0.0, -5.0]))
+        hole_mask = np.zeros((512, 512), dtype=bool)
+        hole_mask[160:352, 160:352] = True
+
+        result = homogenize_gaussians(
+            gaussians,
+            hole_mask,
+            viewmat,
+            intrinsics,
+            max_new_gaussians=7,
+        )
+        assert result["positions"].shape[0] - gaussians["positions"].shape[0] <= 7
+
 
 # ===================================================================
 # T7.9 — Softmax depth loss
@@ -585,6 +603,22 @@ class TestIterativeFill:
                 round_idx=0,
             )
 
+    def test_approximate_alpha_render_uses_scale_footprint(self) -> None:
+        """Large Gaussian scales should cover more than one projected pixel."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _approximate_alpha_render
+
+        gaussians = {
+            "positions": np.array([[0.0, 0.0, 4.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+            "opacities": np.array([2.0], dtype=np.float32),
+            "scales": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+            "rotations": np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        }
+        cam = {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 32, "width": 32}
+
+        alpha = _approximate_alpha_render(gaussians, cam)
+        assert int((alpha > 0).sum()) > 1
+
 
 # ===================================================================
 # T7.7 — EscherNet stub
@@ -643,8 +677,9 @@ class TestShareGSReuse:
             "rotations": np.tile([1, 0, 0, 0], (20, 1)).astype(np.float32),
         }
         hole_mask = np.zeros((64, 64), dtype=bool)
+        target_view = {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 64, "width": 64}
 
-        result = reuse_patches(gaussians, hole_mask, [], {})
+        result = reuse_patches(gaussians, hole_mask, target_view, [], {})
         assert result["positions"].shape[0] == 20
 
     def test_patches_added_with_source_views(self) -> None:
@@ -670,8 +705,15 @@ class TestShareGSReuse:
         source_views = [
             {"viewmat": viewmat, "fov": 90.0, "height": 128, "width": 128},
         ]
+        target_view = {"viewmat": viewmat, "fov": 90.0, "height": 128, "width": 128}
 
-        result = reuse_patches(gaussians, hole_mask, source_views, {"cameras": {}, "images": {}})
+        result = reuse_patches(
+            gaussians,
+            hole_mask,
+            target_view,
+            source_views,
+            {"cameras": {}, "images": {}},
+        )
         n_after = result["positions"].shape[0]
         assert n_after > 50, "Patch reuse should add Gaussians"
 
@@ -692,15 +734,67 @@ class TestShareGSReuse:
             {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 256, "width": 256},
             {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 256, "width": 256},
         ]
+        target_view = {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 256, "width": 256}
 
         result = reuse_patches(
             gaussians,
             hole_mask,
+            target_view,
             source_views,
             {"cameras": {}, "images": {}},
             max_new_gaussians=7,
         )
         assert result["positions"].shape[0] - gaussians["positions"].shape[0] <= 7
+
+    def test_patch_reuse_places_gaussians_into_target_holes(self) -> None:
+        """Patch reuse should place clones according to the target hole geometry."""
+        from sphereforge.stages.stage07_occlusion.sharegs_reuse import reuse_patches
+
+        gaussians = {
+            "positions": np.array([[0.0, 0.0, 5.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
+            "opacities": np.array([2.0], dtype=np.float32),
+            "scales": np.array([[-2.0, -2.0, -2.0]], dtype=np.float32),
+            "rotations": np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        }
+        hole_mask = np.zeros((128, 128), dtype=bool)
+        hole_mask[64, 96] = True
+        target_view = {"viewmat": np.eye(4, dtype=np.float32), "fov": 90.0, "height": 128, "width": 128}
+        source_views = [target_view]
+
+        result = reuse_patches(
+            gaussians,
+            hole_mask,
+            target_view,
+            source_views,
+            {"cameras": {}, "images": {}},
+            max_new_gaussians=1,
+        )
+
+        new_pos = result["positions"][-1]
+        assert not np.allclose(new_pos, gaussians["positions"][0])
+        assert new_pos[0] > 0.0
+
+    def test_novel_cameras_project_visible_points(self) -> None:
+        """Novel-camera view matrices should still produce visible depth for Stage 7 projection."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _approximate_alpha_render
+        from sphereforge.stages.stage07_occlusion.novel_cameras import generate_novel_cameras
+
+        gaussians = {
+            "positions": np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+            "opacities": np.array([2.0], dtype=np.float32),
+            "scales": np.array([[-2.0, -2.0, -2.0]], dtype=np.float32),
+            "rotations": np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        }
+
+        cams = generate_novel_cameras(np.zeros(3, dtype=np.float32), scene_radius=2.0, n_directions=4, n_distances=1)
+        nonzero = []
+        for cam in cams:
+            alpha = _approximate_alpha_render(gaussians, cam)
+            nonzero.append(float(alpha.max()))
+
+        assert any(value > 0.0 for value in nonzero)
 
 
 # ===================================================================

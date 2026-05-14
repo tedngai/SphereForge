@@ -17,12 +17,16 @@ stage06:
   checkpoint_every: 5000
 
 stage07:
-  refine_backend: "sharegs_gsdiff"
+  refine_backend: "gsfix3d"
   refine_cameras: 12
   refine_rounds: 1
   sharegs_enabled: true
+  sharegs_patch_reuse: true
+  sharegs_patch_reuse_max_new: 1000
+  max_gaussians: 1500000
   sharegs_optimize_iters: 200
 
 stage08:
+  max_scale: "auto"
   export_format: ["ply", "html"]
   compact_box_culling: true

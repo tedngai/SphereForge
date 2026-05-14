@@ -11,9 +11,12 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from scipy.ndimage import binary_dilation, distance_transform_edt
+from scipy.ndimage import distance_transform_edt
 
-from sphereforge.common.gaussian_parameters import inflate_scales
+from sphereforge.common.gaussian_parameters import inflate_scales, scales_to_activated
+from sphereforge.stages.stage07_occlusion.projection import (
+    world_to_camera_with_positive_depth,
+)
 
 logger = logging.getLogger("sphereforge.stage07.sharegs_homogenize")
 
@@ -24,6 +27,7 @@ def homogenize_gaussians(
     camera_pose: np.ndarray,
     intrinsics: dict,
     feature_radius: int = 5,
+    max_new_gaussians: int | None = None,
 ) -> dict:
     """Fill holes by cloning and adjusting neighbouring Gaussians.
 
@@ -43,6 +47,8 @@ def homogenize_gaussians(
             dimensions (``height``, ``width``).
         feature_radius: Radius in pixels for feature-similarity neighbourhood
             when selecting the best source Gaussian (default 5).
+        max_new_gaussians: Optional hard cap for the number of new Gaussians
+            added in this call.
 
     Returns:
         Updated gaussians dict with new Gaussians appended to fill holes.
@@ -66,54 +72,47 @@ def homogenize_gaussians(
         logger.debug("No holes to homogenize")
         return gaussians
 
-    # Compute the distance transform: for each hole pixel, find the
-    # nearest non-hole pixel.
-    _dist_map, nearest_yx = distance_transform_edt(~hole_mask, return_indices=True)
-
     # Project existing Gaussian centres into image to find per-pixel assignments.
     fx = intrinsics.get("fx", 1.0)
     fy = intrinsics.get("fy", 1.0)
     cx = intrinsics.get("cx", W / 2.0)
     cy = intrinsics.get("cy", H / 2.0)
 
-    # World-to-camera projection
     R = camera_pose[:3, :3]
     t = camera_pose[:3, 3]
-    cam_positions = (R @ positions.T + t[:, None]).T  # (N, 3)
+    cam_positions, positive_depth, forward_sign = world_to_camera_with_positive_depth(
+        positions,
+        camera_pose,
+    )
 
-    # Filter Gaussians in front of camera (z > 0)
-    valid_mask = cam_positions[:, 2] > 1e-6
+    valid_mask = positive_depth > 1e-6
     if not np.any(valid_mask):
         logger.warning("No Gaussians visible in this camera — skipping homogenization")
         return gaussians
 
     valid_cam_pos = cam_positions[valid_mask]
+    valid_depth = positive_depth[valid_mask]
     valid_idx = np.where(valid_mask)[0]
 
     # Project to pixel coordinates
-    px = (valid_cam_pos[:, 0] / valid_cam_pos[:, 2]) * fx + cx
-    py = (valid_cam_pos[:, 1] / valid_cam_pos[:, 2]) * fy + cy
+    px = (valid_cam_pos[:, 0] / valid_depth) * fx + cx
+    py = (valid_cam_pos[:, 1] / valid_depth) * fy + cy
     px_int = np.clip(np.round(px).astype(int), 0, W - 1)
     py_int = np.clip(np.round(py).astype(int), 0, H - 1)
 
-    # Build a per-pixel index map of the nearest Gaussian
+    # Build a per-pixel index map of projected visible Gaussians.
     gauss_idx_map = np.full((H, W), -1, dtype=np.int32)
     gauss_idx_map[py_int, px_int] = valid_idx
 
-    # Dilate the index map so each pixel has a Gaussian assignment
-    # Use iterative dilation of the index map
-    for _ in range(feature_radius):
-        dilated = binary_dilation(gauss_idx_map >= 0)
-        # For newly filled pixels, copy from neighbours
-        new_pixels = dilated & (gauss_idx_map < 0)
-        if not np.any(new_pixels):
-            break
-        # Simple nearest-neighbour fill via the distance map
-        for y, x in zip(*np.where(new_pixels), strict=False):
-            ny, nx = nearest_yx[:, y, x]
-            ny, nx = int(ny), int(nx)
-            if gauss_idx_map[ny, nx] >= 0:
-                gauss_idx_map[y, x] = gauss_idx_map[ny, nx]
+    seed_mask = gauss_idx_map >= 0
+    if not np.any(seed_mask):
+        logger.warning("No projected Gaussian assignments available — skipping homogenization")
+        return gaussians
+
+    # Fill every pixel with the nearest projected Gaussian assignment so hole
+    # pixels can clone from the closest actually visible source Gaussian.
+    _seed_dist, nearest_seed_yx = distance_transform_edt(~seed_mask, return_indices=True)
+    nearest_gauss_idx = gauss_idx_map[nearest_seed_yx[0], nearest_seed_yx[1]]
 
     # For hole pixels, determine which Gaussian to clone
     hole_ys, hole_xs = np.where(hole_mask)
@@ -123,13 +122,19 @@ def homogenize_gaussians(
         return gaussians
 
     # Subsample holes for efficiency — we don't need one Gaussian per pixel.
-    # Use stride proportional to average Gaussian scale.
-    avg_scale = float(np.mean(np.exp(scales[valid_idx])))
-    stride = max(1, round(avg_scale * fx * 0.5))
-    stride = min(stride, max(H, W) // 8)
+    # Use projected image-space footprint rather than raw world-space scale so
+    # the sampling density tracks the visible splat size in the target view.
+    projected_footprints = np.mean(scales_to_activated(scales[valid_idx]), axis=1)
+    projected_footprints = projected_footprints * fx / np.maximum(valid_depth, 1e-6)
+    median_footprint = float(np.median(projected_footprints)) if projected_footprints.size else 1.0
+    stride = max(4, round(median_footprint * 0.5))
+    stride = min(stride, max(H, W) // 16)
 
     hole_ys_sub = hole_ys[::stride]
     hole_xs_sub = hole_xs[::stride]
+    if max_new_gaussians is not None and len(hole_ys_sub) > max_new_gaussians:
+        hole_ys_sub = hole_ys_sub[:max_new_gaussians]
+        hole_xs_sub = hole_xs_sub[:max_new_gaussians]
     n_new = len(hole_ys_sub)
 
     logger.info(
@@ -149,7 +154,7 @@ def homogenize_gaussians(
     cam_to_world = np.linalg.inv(camera_pose)
 
     for hy, hx in zip(hole_ys_sub, hole_xs_sub, strict=False):
-        src_gi = gauss_idx_map[nearest_yx[0, hy, hx], nearest_yx[1, hy, hx]]
+        src_gi = nearest_gauss_idx[hy, hx]
         if src_gi < 0:
             continue
 
@@ -161,14 +166,14 @@ def homogenize_gaussians(
 
         # Compute 3-D position for the new Gaussian by back-projecting
         # the hole pixel to the same depth as the source Gaussian.
-        src_z_cam = (R @ src_pos + t)[2]
-        if src_z_cam < 1e-6:
+        src_depth = float(positive_depth[src_gi])
+        if src_depth < 1e-6:
             continue
 
         # Back-project pixel (hx, hy) to camera space
-        x_cam = (hx - cx) / fx * src_z_cam
-        y_cam = (hy - cy) / fy * src_z_cam
-        pt_cam = np.array([x_cam, y_cam, src_z_cam, 1.0])
+        x_cam = (hx - cx) / fx * src_depth
+        y_cam = (hy - cy) / fy * src_depth
+        pt_cam = np.array([x_cam, y_cam, src_depth * forward_sign, 1.0])
 
         # Transform to world space
         pt_world = cam_to_world @ pt_cam

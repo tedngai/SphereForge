@@ -14,6 +14,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_max_scale_ratio(max_scale: str) -> float:
+    """Resolve Stage 8 max-scale config to a scene-relative ratio.
+
+    Args:
+        max_scale: Config value. ``"auto"`` uses the same 10%-of-scene
+            heuristic as guarded Stage 6 pruning. Numeric strings are
+            interpreted directly as ratios.
+
+    Returns:
+        Positive scale ratio relative to scene extent.
+
+    Raises:
+        ValueError: If the config value is unsupported or non-positive.
+    """
+    if max_scale == "auto":
+        return 0.1
+
+    try:
+        ratio = float(max_scale)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid stage08.max_scale value {max_scale!r}; expected 'auto' or a positive ratio"
+        ) from exc
+
+    if ratio <= 0:
+        raise ValueError(
+            f"stage08.max_scale must resolve to a positive ratio, got {max_scale!r}"
+        )
+
+    return ratio
+
+
 def run_stage08(
     config: Stage08Config,
     refined_ply_path: Path,
@@ -51,6 +83,8 @@ def run_stage08(
     if config.rap_final_pass:
         from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
 
+        max_scale_ratio = _resolve_max_scale_ratio(config.max_scale)
+
         gaussians = {
             "positions": positions,
             "colors": colors,
@@ -64,7 +98,7 @@ def run_stage08(
         gaussians, prune_stats = final_rap_prune(
             gaussians,
             min_opacity=config.min_opacity,
-            max_scale_ratio=10.0,
+            max_scale_ratio=max_scale_ratio,
         )
         stats.update(prune_stats)
         positions = gaussians["positions"]
@@ -74,7 +108,12 @@ def run_stage08(
         rotations = gaussians["rotations"]
         sh_coeffs = gaussians.get("sh_coeffs", None)
 
-        logger.info("RAP pruning: %d → %d Gaussians", n_before, positions.shape[0])
+        logger.info(
+            "RAP pruning: %d → %d Gaussians (max_scale_ratio=%.4f)",
+            n_before,
+            positions.shape[0],
+            max_scale_ratio,
+        )
 
     # ---- Compact box culling ----
     if config.compact_box_culling:

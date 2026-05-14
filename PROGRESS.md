@@ -700,6 +700,78 @@ This file is the automatic log of completed tasks. It is checked against TASKS.m
   - (none)
 - **Implementation notes:** Stage 7 pipeline complete: 17204996 Gaussians, 16216140 added
 
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T22:47:10.982803+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1000647 Gaussians, 11791 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T22:49:14.185779+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1003737 Gaussians, 14881 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T22:50:57.754221+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1002120 Gaussians, 13264 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T23:48:37.068539+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1091314 Gaussians, 102458 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T23:49:48.450322+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1500818 Gaussians, 511962 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T23:51:08.974176+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1500000 Gaussians, 511144 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-13T23:52:16.569320+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1500000 Gaussians, 511144 added
+
+
+### [T7.13] Task Completed
+- **Completed:** 2026-05-14T01:42:42.647207+00:00
+- **Files created:**
+  - `data/refined/refined.ply`
+- **Files modified:**
+  - (none)
+- **Implementation notes:** Stage 7 pipeline complete: 1500000 Gaussians, 511144 added
+
 ## Statistics
 
 - **Total tasks:** 94 (94 DONE, 0 remaining)
