@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import numpy as np
-
-from sphereforge.stages.stage02_cubemap.cubemap import CUBEMAP_FACES
+from sphereforge.stages.stage02_cubemap.cubemap import CUBEMAP_FACES, extract_perspective_view
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from sphereforge.config import Stage02Config
 
 logger = logging.getLogger("sphereforge.stage02.yaw_diversify")
@@ -121,71 +121,9 @@ def _extract_single_face(
     Returns:
         Crop image as a numpy array.
     """
-    import math
-
-    import cv2
-
-    erp_h, erp_w = erp_image.shape[:2]
-    render_res = max(256, int(erp_w / 4 * total_fov / 90))
-
-    focal = render_res / (2.0 * math.tan(math.radians(total_fov) / 2.0))
-    cx_out = render_res / 2.0
-    cy_out = render_res / 2.0
-
-    # Build rotation matrix for this face
-    yaw_rad = math.radians(face_yaw)
-    pitch_rad = math.radians(face_pitch)
-
-    cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
-    ry = np.array(
-        [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=np.float64
-    )
-    cp, sp = math.cos(pitch_rad), math.sin(pitch_rad)
-    rx = np.array(
-        [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]], dtype=np.float64
-    )
-    R = rx @ ry
-
-    # Pixel grid
-    u_coords = np.arange(render_res, dtype=np.float64)
-    v_coords = np.arange(render_res, dtype=np.float64)
-    uu, vv = np.meshgrid(u_coords, v_coords)
-
-    dx = (uu - cx_out) / focal
-    dy = (vv - cy_out) / focal
-    dz = np.ones_like(dx)
-
-    norms = np.sqrt(dx * dx + dy * dy + dz * dz)
-    dx /= norms
-    dy /= norms
-    dz /= norms
-
-    dirs_cam = np.stack([dx, dy, dz], axis=-1)
-
-    # cam->world = R^T
-    R_inv = R.T
-    dirs_world = np.einsum("ij,...j->...i", R_inv, dirs_cam)
-
-    # Direction to ERP coordinates
-    x = dirs_world[..., 0]
-    y = dirs_world[..., 1]
-    z = dirs_world[..., 2]
-
-    phi = np.arctan2(x, -z)
-    theta = np.arcsin(np.clip(y, -1.0, 1.0))
-
-    erp_u = (phi + math.pi) / (2.0 * math.pi) * erp_w
-    erp_v = (math.pi / 2.0 - theta) / math.pi * erp_h
-
-    map_x = erp_u.astype(np.float32)
-    map_y = erp_v.astype(np.float32)
-
-    crop = cv2.remap(
+    return extract_perspective_view(
         erp_image,
-        map_x,
-        map_y,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_WRAP,
+        yaw_deg=face_yaw,
+        pitch_deg=face_pitch,
+        fov_deg=total_fov,
     )
-
-    return crop

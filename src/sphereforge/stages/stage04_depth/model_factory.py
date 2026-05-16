@@ -10,6 +10,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_STUB_DEPTH_MODELS = {"dap", "depth_anything_v2", "rpg360", "panda", "da360"}
+
+
+def is_stub_depth_model(model_name: str) -> bool:
+    """Return whether the selected depth backend is still a stub path."""
+    normalized = "dap" if model_name == "panda" else model_name
+    return normalized in _STUB_DEPTH_MODELS
+
 
 def get_depth_estimator(model_name: str, **kwargs: Any) -> Any:
     """Create a depth estimation model by name.

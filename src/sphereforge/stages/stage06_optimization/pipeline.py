@@ -17,6 +17,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _activated_opacity_to_logit(opacities: np.ndarray) -> np.ndarray:
+    """Convert activated Stage 5 opacities into raw logits for Stage 6."""
+    clipped = np.clip(np.asarray(opacities, dtype=np.float32), 1e-6, 1.0 - 1e-6)
+    return np.log(clipped / (1.0 - clipped)).astype(np.float32)
+
+
+def _activated_scale_to_log(scale: np.ndarray) -> np.ndarray:
+    """Convert activated Stage 5 scales into raw log-scales for Stage 6."""
+    clipped = np.clip(np.asarray(scale, dtype=np.float32), 1e-12, None)
+    return np.log(clipped).astype(np.float32)
+
+
+def _prepare_initial_gaussians_for_training(gaussians_ply: dict) -> dict[str, torch.Tensor]:
+    """Normalize Stage 5 PLY parameters into Stage 6 raw optimization space."""
+    return {
+        "positions": torch.from_numpy(gaussians_ply["positions"]).float(),
+        "colors": torch.from_numpy(gaussians_ply["colors"]).float(),
+        "opacities": torch.from_numpy(
+            _activated_opacity_to_logit(gaussians_ply["opacities"])
+        ).float(),
+        "scales": torch.from_numpy(
+            _activated_scale_to_log(gaussians_ply["scales"])
+        ).float(),
+        "rotations": torch.from_numpy(gaussians_ply["rotations"]).float(),
+    }
+
+
 def _camera_to_intrinsics_matrix(cam: dict) -> torch.Tensor:
     """Build a 3x3 intrinsics matrix from a parsed COLMAP camera entry."""
     model = cam["model"]
@@ -58,7 +85,11 @@ def run_stage06(
     Returns:
         Path to the optimized .ply file.
     """
-    from sphereforge.common.colmap_helpers import parse_cameras_txt, parse_images_txt, read_colmap_binary
+    from sphereforge.common.colmap_helpers import (
+        parse_cameras_txt,
+        parse_images_txt,
+        read_colmap_binary,
+    )
     from sphereforge.stages.stage06_optimization.training_loop import train_gaussians
 
     output_dir = Path(output_dir)
@@ -68,14 +99,18 @@ def run_stage06(
     logger.info("Loading initial Gaussians from %s", initial_ply_path)
     gaussians_ply = read_ply(initial_ply_path)
 
-    # Convert to torch tensors
-    initial_gaussians = {
-        "positions": torch.from_numpy(gaussians_ply["positions"]).float(),
-        "colors": torch.from_numpy(gaussians_ply["colors"]).float(),
-        "opacities": torch.from_numpy(gaussians_ply["opacities"]).float(),
-        "scales": torch.from_numpy(gaussians_ply["scales"]).float(),
-        "rotations": torch.from_numpy(gaussians_ply["rotations"]).float(),
-    }
+    initial_gaussians = _prepare_initial_gaussians_for_training(gaussians_ply)
+    logger.info(
+        "Converted Stage 5 PLY parameters to Stage 6 raw space: opacity range %.4f..%.4f -> %.4f..%.4f, scale range %.6f..%.6f -> %.6f..%.6f",
+        float(np.min(gaussians_ply["opacities"])),
+        float(np.max(gaussians_ply["opacities"])),
+        float(torch.min(initial_gaussians["opacities"]).item()),
+        float(torch.max(initial_gaussians["opacities"]).item()),
+        float(np.min(gaussians_ply["scales"])),
+        float(np.max(gaussians_ply["scales"])),
+        float(torch.min(initial_gaussians["scales"]).item()),
+        float(torch.max(initial_gaussians["scales"]).item()),
+    )
 
     # Load COLMAP model — check common subdirectory "0/" first
     for candidate in [colmap_dir / "0", colmap_dir]:

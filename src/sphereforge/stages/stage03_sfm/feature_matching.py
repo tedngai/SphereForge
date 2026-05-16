@@ -50,10 +50,45 @@ def _run_colmap_matcher(matcher_name: str, database_path: Path, extra_args: list
     logger.info("COLMAP %s completed successfully.", matcher_name)
 
 
+def build_vocab_tree(database_path: Path, vocab_tree_path: Path) -> Path:
+    """Build a local COLMAP vocabulary tree from the extracted features."""
+    vocab_tree_path = Path(vocab_tree_path)
+    vocab_tree_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "colmap",
+        "vocab_tree_builder",
+        "--database_path",
+        str(database_path),
+        "--vocab_tree_path",
+        str(vocab_tree_path),
+        "--num_visual_words",
+        "4096",
+    ]
+    logger.info("Building COLMAP vocabulary tree at %s", vocab_tree_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                            env={
+                                **os.environ,
+                                "QT_QPA_PLATFORM": "offscreen",
+                                "PATH": "/home/tngai/.local/bin:" + os.environ.get("PATH", ""),
+                                "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:"
+                                + os.environ.get("LD_LIBRARY_PATH", ""),
+                            })
+    if result.returncode != 0:
+        logger.error("COLMAP vocab_tree_builder stderr:\n%s", result.stderr)
+        raise RuntimeError(
+            f"COLMAP vocab_tree_builder failed (exit code {result.returncode}): "
+            f"{result.stderr[:500]}"
+        )
+    return vocab_tree_path
+
+
 def run_feature_matching(
     database_path: Path,
     matcher_type: str = "sequential+vocabulary_tree",
     vocab_tree_path: Path | None = None,
+    match_list_path: Path | None = None,
+    sequential_overlap: int | None = None,
+    sequential_quadratic_overlap: bool | None = None,
 ) -> None:
     """Run COLMAP feature matching on the database.
 
@@ -82,14 +117,36 @@ def run_feature_matching(
         _run_colmap_matcher("exhaustive_matcher", database_path)
 
     elif matcher_type == "sequential":
-        _run_colmap_matcher("sequential_matcher", database_path)
+        extra_args: list[str] = []
+        if sequential_overlap is not None:
+            extra_args.extend(["--SequentialMatching.overlap", str(sequential_overlap)])
+        if sequential_quadratic_overlap is not None:
+            extra_args.extend(
+                [
+                    "--SequentialMatching.quadratic_overlap",
+                    str(int(sequential_quadratic_overlap)),
+                ]
+            )
+        _run_colmap_matcher("sequential_matcher", database_path, extra_args or None)
 
     elif matcher_type == "sequential+vocabulary_tree":
         # Run sequential matcher first
-        _run_colmap_matcher("sequential_matcher", database_path)
+        sequential_args: list[str] = []
+        if sequential_overlap is not None:
+            sequential_args.extend(["--SequentialMatching.overlap", str(sequential_overlap)])
+        if sequential_quadratic_overlap is not None:
+            sequential_args.extend(
+                [
+                    "--SequentialMatching.quadratic_overlap",
+                    str(int(sequential_quadratic_overlap)),
+                ]
+            )
+        _run_colmap_matcher("sequential_matcher", database_path, sequential_args or None)
         # Then run vocabulary tree matcher if vocab tree is provided
         if vocab_tree_path is not None:
             extra = ["--VocabTreeMatching.vocab_tree_path", str(vocab_tree_path)]
+            if match_list_path is not None:
+                extra.extend(["--VocabTreeMatching.match_list_path", str(match_list_path)])
             _run_colmap_matcher("vocab_tree_matcher", database_path, extra)
         else:
             logger.warning(
@@ -103,6 +160,8 @@ def run_feature_matching(
                 "vocab_tree_path is required when matcher_type is 'vocab_tree'"
             )
         extra = ["--VocabTreeMatching.vocab_tree_path", str(vocab_tree_path)]
+        if match_list_path is not None:
+            extra.extend(["--VocabTreeMatching.match_list_path", str(match_list_path)])
         _run_colmap_matcher("vocab_tree_matcher", database_path, extra)
 
     else:

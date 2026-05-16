@@ -12,6 +12,10 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger("sphereforge.stage03.feature_extraction")
 
@@ -35,6 +39,8 @@ def run_feature_extraction(
     camera_model: str = "PINHOLE",
     feature_type: str = "root_sift",
     mask_dir: Path | None = None,
+    single_camera_per_folder: bool = False,
+    image_list: Sequence[str] | None = None,
 ) -> None:
     """Run COLMAP feature extraction on a set of images.
 
@@ -56,54 +62,73 @@ def run_feature_extraction(
     """
     _check_colmap_installed()
 
-    descriptor_norm = "l1_root" if feature_type == "root_sift" else "l2"
-
     cmd: list[str] = [
         "colmap", "feature_extractor",
         "--database_path", str(database_path),
         "--image_path", str(image_dir),
         "--ImageReader.camera_model", camera_model,
-        "--ImageReader.single_camera", "1",
-        "--descriptor_normalization", descriptor_norm,
     ]
+    if single_camera_per_folder:
+        cmd.extend(["--ImageReader.single_camera_per_folder", "1"])
+    else:
+        cmd.extend(["--ImageReader.single_camera", "1"])
+    root_sift_enabled = "1" if feature_type == "root_sift" else "0"
+    cmd.extend(["--SiftExtraction.root_sift", root_sift_enabled])
 
     # If mask_dir is provided, build an image list file with only the
-    # images that have a corresponding mask.
+    # images that have a corresponding mask. Panorama-rig layouts also use
+    # this path to enforce a stable per-folder ordering for sequential matching.
     temp_image_list: Path | None = None
-    if mask_dir is not None:
-        mask_dir = Path(mask_dir)
-        mask_names = {p.stem for p in mask_dir.iterdir() if p.is_file()}
-        image_files = sorted(
-            p for p in Path(image_dir).iterdir()
-            if p.is_file() and p.stem in mask_names
-        )
-        if not image_files:
-            logger.warning(
-                "No images in %s match masks in %s; falling back to all images",
-                image_dir,
-                mask_dir,
+    requested_images = list(image_list) if image_list is not None else None
+    if requested_images is not None or mask_dir is not None:
+        mask_dir_path = Path(mask_dir) if mask_dir is not None else None
+        image_names = requested_images
+        if image_names is None:
+            image_names = sorted(
+                path.relative_to(image_dir).as_posix()
+                for path in Path(image_dir).rglob("*")
+                if path.is_file()
             )
-        else:
-            # Write a temporary image-list file
+
+        if mask_dir_path is not None:
+            mask_names = {
+                path.relative_to(mask_dir_path).with_suffix("").as_posix()
+                for path in mask_dir_path.rglob("*")
+                if path.is_file()
+            }
+            filtered_names = [
+                image_name
+                for image_name in image_names
+                if Path(image_name).with_suffix("").as_posix() in mask_names
+            ]
+            if not filtered_names:
+                logger.warning(
+                    "No images in %s match masks in %s; falling back to all images",
+                    image_dir,
+                    mask_dir_path,
+                )
+            else:
+                image_names = filtered_names
+
+        if image_names:
             tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 mode="w", suffix=".txt", delete=False, prefix="colmap_imagelist_"
             )
-            for img_path in image_files:
-                tmp.write(f"{img_path.name}\n")
+            for image_name in image_names:
+                tmp.write(f"{image_name}\n")
             tmp.close()
             temp_image_list = Path(tmp.name)
             cmd.extend(["--image_list_path", str(temp_image_list)])
-            logger.info(
-                "Using mask-aware image list with %d images", len(image_files)
-            )
+            logger.info("Using explicit image list with %d images", len(image_names))
 
     logger.info(
         "Running COLMAP feature_extractor: database=%s, images=%s, "
-        "camera_model=%s, feature_type=%s",
+        "camera_model=%s, feature_type=%s, single_camera_per_folder=%s",
         database_path,
         image_dir,
         camera_model,
         feature_type,
+        single_camera_per_folder,
     )
 
     try:
@@ -114,6 +139,23 @@ def run_feature_extraction(
                             "LD_LIBRARY_PATH": "/home/tngai/miniconda3/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
         }
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+        if result.returncode != 0 and "unrecognised option '--SiftExtraction.root_sift'" in result.stderr:
+            descriptor_norm = "l1_root" if feature_type == "root_sift" else "l2"
+            fallback_cmd = list(cmd)
+            root_sift_idx = fallback_cmd.index("--SiftExtraction.root_sift")
+            del fallback_cmd[root_sift_idx : root_sift_idx + 2]
+            fallback_cmd.extend(["--descriptor_normalization", descriptor_norm])
+            logger.info(
+                "COLMAP build does not support --SiftExtraction.root_sift; retrying with --descriptor_normalization=%s",
+                descriptor_norm,
+            )
+            result = subprocess.run(
+                fallback_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
         if result.returncode != 0:
             logger.error("COLMAP feature_extractor stderr:\n%s", result.stderr)
             raise RuntimeError(

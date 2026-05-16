@@ -108,70 +108,90 @@ def fuse_multiview(
     logger.info("Fusing %d points from %d views", n_total, len(positions_list))
 
     # Build KD-tree and cluster nearby points
-    tree = cKDTree(world_positions)
-
-    # Compute dedup_distance as 0.01 * scene extent
+    # Use a fine grid for initial clustering, then merge neighboring cells.
+    # Cell size = dedup_distance / 4 gives ~64× more cells than points in dense regions,
+    # and the neighborhood merge catches points spanning cell boundaries.
     pos_range = np.ptp(world_positions, axis=0)
     scene_extent = float(np.max(pos_range))
-    dedup_distance = 0.01 * scene_extent if scene_extent > 0 else 0.01
+    dedup_distance = max(0.01 * scene_extent, 0.01) if scene_extent > 0 else 0.01
+    cell_size = max(dedup_distance / 4, max(0.0001, scene_extent / 100000))
 
-    logger.debug("Dedup distance: %.6f (scene_extent=%.2f)", dedup_distance, scene_extent)
+    logger.debug("Dedup: dist=%.4f cell=%.4f (scene_extent=%.2f)", dedup_distance, cell_size, scene_extent)
 
-    # Find neighbour pairs
-    pairs = tree.query_pairs(r=dedup_distance)
+    world_positions_f64 = world_positions.astype(np.float64)
+    origin = world_positions_f64.min(axis=0) - cell_size
+    grid_cells = np.floor((world_positions_f64 - origin) / cell_size).astype(np.int64)
 
-    # Union-Find for clustering
-    parent = list(range(n_total))
+    cell_indices = (
+        grid_cells[:, 0].astype(np.int64) * 1_000_000_000_000
+        + grid_cells[:, 1].astype(np.int64) * 1_000_000
+        + grid_cells[:, 2].astype(np.int64)
+    )
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    sort_order = np.argsort(cell_indices)
+    sorted_cells = cell_indices[sort_order]
+    sorted_pos = world_positions[sort_order]
+    sorted_col = world_colors[sort_order]
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
+    cell_bounds = np.where(np.diff(sorted_cells) != 0)[0].astype(np.int64)
+    starts = np.concatenate([[0], cell_bounds + 1])
+    ends = np.concatenate([cell_bounds + 1, [n_total]])
 
-    for i, j in pairs:
-        union(i, j)
+    # Average within each fine-grid cell
+    n_cells = len(starts)
+    cell_pos = np.empty((n_cells, 3), dtype=np.float32)
+    cell_col = np.empty((n_cells, 3), dtype=np.float32)
+    cell_conf = np.empty(n_cells, dtype=np.int32)
+    for i in range(n_cells):
+        s, e = int(starts[i]), int(ends[i])
+        cluster_size = e - s
+        cell_pos[i] = sorted_pos[s:e].mean(axis=0).astype(np.float32)
+        cell_col[i] = sorted_col[s:e].mean(axis=0).astype(np.float32)
+        cell_conf[i] = cluster_size
 
-    # Group by root
-    clusters: dict[int, list[int]] = {}
-    for idx in range(n_total):
-        root = find(idx)
-        clusters.setdefault(root, []).append(idx)
+    # Merge neighboring fine-grid cells using a KD-tree on cell centers
+    # Only if cell count is manageable (<500K), otherwise skip neighborhood merge
+    from scipy.spatial import cKDTree
 
-    # Merge each cluster with confidence weighting
-    fused_pos_list: list[np.ndarray] = []
-    fused_col_list: list[np.ndarray] = []
-    confidence_list: list[int] = []
+    if len(cell_pos) <= 500000:
+        tree = cKDTree(cell_pos)
+        pairs = tree.query_pairs(r=dedup_distance)
 
-    for _root, members in clusters.items():
-        n_members = len(members)
-        # Confidence = number of contributing views (each point counts as 1)
-        member_pos = world_positions[members]  # (K, 3)
-        member_col = world_colors[members]  # (K, 3)
+        parent = list(range(len(cell_pos)))
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
 
-        # Equal weight per point (confidence = 1 per point)
-        weights = np.ones(n_members, dtype=np.float64)
-        w_sum = weights.sum()
+        for i, j in pairs:
+            union(i, j)
 
-        avg_pos = (member_pos.astype(np.float64) * weights[:, np.newaxis]).sum(
-            axis=0
-        ) / w_sum
-        avg_col = (member_col.astype(np.float64) * weights[:, np.newaxis]).sum(
-            axis=0
-        ) / w_sum
+        clusters: dict[int, list[int]] = {}
+        for idx in range(len(cell_pos)):
+            root = find(idx)
+            clusters.setdefault(root, []).append(idx)
 
-        fused_pos_list.append(avg_pos.astype(np.float32))
-        fused_col_list.append(avg_col.astype(np.float32))
-        confidence_list.append(n_members)
+        fused_pos_list = np.empty((len(clusters), 3), dtype=np.float32)
+        fused_col_list = np.empty((len(clusters), 3), dtype=np.float32)
+        confidence_list = np.empty(len(clusters), dtype=np.int32)
+        for ci, (_root, members) in enumerate(clusters.items()):
+            total_conf = cell_conf[members].sum()
+            fused_pos_list[ci] = (cell_pos[members] * cell_conf[members, np.newaxis]).sum(axis=0) / total_conf
+            fused_col_list[ci] = (cell_col[members] * cell_conf[members, np.newaxis]).sum(axis=0) / total_conf
+            confidence_list[ci] = total_conf
 
-    fused_positions = np.stack(fused_pos_list, axis=0)
-    fused_colors = np.stack(fused_col_list, axis=0)
-    confidence = np.array(confidence_list, dtype=np.int32)
+        fused_positions = fused_pos_list
+        fused_colors = fused_col_list
+        confidence = confidence_list
+    else:
+        fused_positions = cell_pos
+        fused_colors = cell_col
+        confidence = cell_conf
 
     logger.info(
         "Fusion: %d input points → %d fused points (dedup_dist=%.4f)",

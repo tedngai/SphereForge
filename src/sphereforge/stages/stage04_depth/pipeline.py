@@ -6,6 +6,7 @@ optional RPG360 anchor refinement for each frame in the dataset.
 
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -15,7 +16,10 @@ import numpy as np
 from sphereforge.common.io import read_depth, read_image, write_depth
 from sphereforge.logging_utils import log_task_completion
 from sphereforge.stages.stage04_depth.depth_alignment import align_depth_to_colmap
-from sphereforge.stages.stage04_depth.model_factory import get_depth_estimator
+from sphereforge.stages.stage04_depth.model_factory import (
+    get_depth_estimator,
+    is_stub_depth_model,
+)
 from sphereforge.stages.stage04_depth.scene_analysis import analyze_depth_scene
 
 if TYPE_CHECKING:
@@ -26,14 +30,45 @@ if TYPE_CHECKING:
 logger = logging.getLogger("sphereforge.stage04.pipeline")
 
 
+def _write_stage04_diagnostics(
+    output_dir: Path,
+    *,
+    depth_model: str,
+    stub_depth_backend: bool,
+    total_frames: int,
+    aligned_frames: int,
+    depth_paths: list[Path],
+) -> Path:
+    """Persist a small Stage 4 summary with stub-backend visibility."""
+    warnings: list[str] = []
+    if stub_depth_backend:
+        warnings.append(
+            "Selected depth backend is currently a stub implementation; treat these depth maps as diagnostic-only."
+        )
+
+    diagnostics_path = output_dir / "depth_diagnostics.json"
+    payload = {
+        "depth_model": depth_model,
+        "stub_depth_backend": stub_depth_backend,
+        "total_frames": total_frames,
+        "aligned_frames": aligned_frames,
+        "unaligned_frames": total_frames - aligned_frames,
+        "warnings": warnings,
+        "depth_paths": [str(path) for path in depth_paths],
+    }
+    diagnostics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return diagnostics_path
+
+
 def _process_single_frame_stage04(
     frame_path: Path,
     frame_idx: int,
     config: Stage04Config,
     sparse_model: dict,
+    cubemap_dir: Path,
     output_dir: Path,
     rpg360_anchor: np.ndarray | None,
-) -> tuple[Path, np.ndarray, float, float]:
+) -> tuple[Path, np.ndarray, float, float, bool]:
     """Process a single frame: depth estimation + alignment + write.
 
     Creates its own depth estimator to avoid thread-safety issues.
@@ -70,7 +105,9 @@ def _process_single_frame_stage04(
             sparse_model=sparse_model,
             image_name=image_name_for_model,
             rpg360_anchor=rpg360_anchor if frame_idx == 0 else None,
+            colmap_dataset_dir=cubemap_dir,
         )
+        alignment_succeeded = True
     except (ValueError, FileNotFoundError) as exc:
         logger.warning(
             "COLMAP alignment failed for '%s': %s. Using unaligned depth.",
@@ -80,6 +117,7 @@ def _process_single_frame_stage04(
         aligned_depth = raw_depth.astype(np.float32)
         scale = 1.0
         shift = 0.0
+        alignment_succeeded = False
 
     depth_path = output_dir / f"{frame_path.stem}_depth.npy"
     write_depth(depth_path, aligned_depth)
@@ -93,7 +131,7 @@ def _process_single_frame_stage04(
         shift,
     )
 
-    return depth_path, aligned_depth, scale, shift
+    return depth_path, aligned_depth, scale, shift, alignment_succeeded
 
 
 def run_stage04(
@@ -150,6 +188,12 @@ def run_stage04(
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    stub_depth_backend = is_stub_depth_model(config.depth_model)
+    if stub_depth_backend:
+        logger.warning(
+            "Stage 4 is using stub depth backend '%s'; outputs are not trustworthy scene depth.",
+            config.depth_model,
+        )
 
     # Pre-compute RPG360 anchor if needed
     rpg360_anchor: np.ndarray | None = None
@@ -165,7 +209,7 @@ def run_stage04(
     if num_workers > 1:
         logger.info("Using %d threads for depth estimation", num_workers)
         args = [
-            (fp, idx, config, sparse_model, output_dir, rpg360_anchor)
+            (fp, idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor)
             for idx, fp in enumerate(frame_paths)
         ]
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -175,12 +219,13 @@ def run_stage04(
         for idx, fp in enumerate(frame_paths):
             results.append(
                 _process_single_frame_stage04(
-                    fp, idx, config, sparse_model, output_dir, rpg360_anchor
+                    fp, idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor
                 )
             )
 
     depth_paths = [r[0] for r in results]
     first_aligned_depth = results[0][1] if results else None
+    aligned_frames = sum(1 for result in results if result[4])
 
     # Step 3: Run scene analysis on first frame
     scene_params: dict = {}
@@ -200,6 +245,14 @@ def run_stage04(
 
     # Apply depth clipping from config
     _apply_depth_clipping(depth_paths, config, scene_params)
+    diagnostics_path = _write_stage04_diagnostics(
+        output_dir,
+        depth_model=config.depth_model,
+        stub_depth_backend=stub_depth_backend,
+        total_frames=len(frame_paths),
+        aligned_frames=aligned_frames,
+        depth_paths=depth_paths,
+    )
 
     logger.info(
         "Stage 4 complete: %d depth maps written to %s",
@@ -218,6 +271,11 @@ def run_stage04(
     return {
         "depth_paths": depth_paths,
         "scene_params": scene_params,
+        "diagnostics": {
+            "path": diagnostics_path,
+            "stub_depth_backend": stub_depth_backend,
+            "aligned_frames": aligned_frames,
+        },
     }
 
 
@@ -410,10 +468,10 @@ def _resolve_clip_value(
 
 
 def _process_single_frame_stage04_worker(
-    args: tuple[Path, int, Stage04Config, dict, Path, np.ndarray | None],
-) -> tuple[Path, np.ndarray, float, float]:
+    args: tuple[Path, int, Stage04Config, dict, Path, Path, np.ndarray | None],
+) -> tuple[Path, np.ndarray, float, float, bool]:
     """Picklable wrapper for ``_process_single_frame_stage04``."""
-    frame_path, frame_idx, config, sparse_model, output_dir, rpg360_anchor = args
+    frame_path, frame_idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor = args
     return _process_single_frame_stage04(
-        frame_path, frame_idx, config, sparse_model, output_dir, rpg360_anchor
+        frame_path, frame_idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor
     )

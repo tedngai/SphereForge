@@ -160,8 +160,20 @@ def compute_lpips(
     a_t = torch.from_numpy(image_a).permute(2, 0, 1).unsqueeze(0).float() * 2 - 1
     b_t = torch.from_numpy(image_b).permute(2, 0, 1).unsqueeze(0).float() * 2 - 1
 
-    loss_fn = lpips.LPIPS(net=net)
+    loss_fn = _get_lpips_model(net)
     with torch.no_grad():
         dist = loss_fn(a_t, b_t)
 
     return float(dist.item())
+
+
+_lpips_cache: dict[str, object] = {}
+
+
+def _get_lpips_model(net: str = "alex"):
+    """Return a cached LPIPS model (one per net type)."""
+    if net not in _lpips_cache:
+        import lpips
+
+        _lpips_cache[net] = lpips.LPIPS(net=net)
+    return _lpips_cache[net]

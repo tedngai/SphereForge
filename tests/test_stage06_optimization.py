@@ -1,4 +1,4 @@
-"""Tests for Stage 6 paper-only modules: ErpGS (T6.1–T6.3) and 360-GeoGS (T6.4–T6.5).
+"""Tests for Stage 6 paper-only modules: ErpGS (T6.1-T6.3) and 360-GeoGS (T6.4-T6.5).
 
 Uses small synthetic tensors to verify correctness and differentiability
 of all implemented functions.
@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
-
 
 # ===================================================================
 # T6.1 — erp_weighted_loss + compute_latitudes_from_crops
@@ -643,13 +643,65 @@ class TestDNormalLoss:
             d_normal_loss(depth, surface_normals=wrong_normals)
 
 
+class TestStage06PipelinePrep:
+    """Tests for Stage 6 input-parameter normalization."""
+
+    def test_prepare_initial_gaussians_converts_stage5_encoding(self) -> None:
+        """Stage 6 should ingest Stage 5 activated values as raw trainable parameters."""
+        from sphereforge.stages.stage06_optimization.pipeline import (
+            _prepare_initial_gaussians_for_training,
+        )
+
+        gaussians_ply = {
+            "positions": np.array([[0.0, 0.0, 1.0], [1.0, 0.5, 2.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 0.5, 0.2], [0.1, 0.2, 0.3]], dtype=np.float32),
+            "opacities": np.array([1.0, 0.3], dtype=np.float32),
+            "scales": np.array([[0.02, 0.02, 0.02], [0.5, 0.1, 0.2]], dtype=np.float32),
+            "rotations": np.array(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32
+            ),
+        }
+
+        prepared = _prepare_initial_gaussians_for_training(gaussians_ply)
+        clipped_opacities = np.clip(gaussians_ply["opacities"], 1e-6, 1.0 - 1e-6)
+
+        assert torch.allclose(
+            prepared["opacities"],
+            torch.from_numpy(np.log(clipped_opacities / (1.0 - clipped_opacities))),
+            atol=1e-6,
+        )
+        assert torch.allclose(
+            prepared["scales"],
+            torch.from_numpy(np.log(gaussians_ply["scales"])),
+            atol=1e-6,
+        )
+
+    def test_prepare_initial_gaussians_keeps_opaque_values_finite(self) -> None:
+        """Fully opaque Stage 5 seeds should not become infinite logits."""
+        from sphereforge.stages.stage06_optimization.pipeline import (
+            _prepare_initial_gaussians_for_training,
+        )
+
+        gaussians_ply = {
+            "positions": np.array([[0.0, 0.0, 1.0]], dtype=np.float32),
+            "colors": np.array([[1.0, 1.0, 1.0]], dtype=np.float32),
+            "opacities": np.array([1.0], dtype=np.float32),
+            "scales": np.array([[0.02, 0.02, 0.02]], dtype=np.float32),
+            "rotations": np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        }
+
+        prepared = _prepare_initial_gaussians_for_training(gaussians_ply)
+        assert torch.isfinite(prepared["opacities"]).all()
+        assert torch.isfinite(prepared["scales"]).all()
+
+
 class TestTrainGaussians:
     """Regression tests for Stage 6 training-loop control flow."""
 
     def test_pruning_uses_fresh_activations_after_densify(self, monkeypatch) -> None:
         """Pruning should recompute activated tensors after densification changes N."""
-        from sphereforge.config import Stage06Config
         import sphereforge.stages.stage06_optimization.training_loop as training_loop
+        from sphereforge.config import Stage06Config
 
         def fake_render_gaussians(
             means: torch.Tensor,
@@ -754,8 +806,8 @@ class TestTrainGaussians:
 
     def test_densification_respects_hard_gaussian_cap(self, monkeypatch) -> None:
         """Densification should stop once the configured Gaussian cap is reached."""
-        from sphereforge.config import Stage06Config
         import sphereforge.stages.stage06_optimization.training_loop as training_loop
+        from sphereforge.config import Stage06Config
 
         def fake_render_gaussians(
             means: torch.Tensor,

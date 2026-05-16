@@ -7,14 +7,192 @@ an RPG360 anchor depth map for locally weighted blending in overlap regions.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+from pathlib import Path
 
 import numpy as np
 
 from sphereforge.common.colmap_helpers import quat_to_rotation_matrix
 from sphereforge.common.depth_utils import align_depth_median_ratio
+from sphereforge.stages.stage02_cubemap.cubemap import _make_rotation_matrix
 
 logger = logging.getLogger("sphereforge.stage04.depth_alignment")
+
+
+def _normalize_stage03_image_name(image_name: str) -> str:
+    """Normalize COLMAP image names to a project-relative path form."""
+    normalized = image_name.replace("\\", "/")
+    if normalized.startswith("images/"):
+        normalized = normalized[len("images/") :]
+    return normalized
+
+
+def _frame_stem_from_image_name(image_name: str) -> str:
+    """Return the panorama frame stem from a Stage 2/3 image name."""
+    return Path(_normalize_stage03_image_name(image_name)).stem
+
+
+def _camera_name_from_image_name(image_name: str) -> str | None:
+    """Return the panorama-rig camera folder name from a Stage 2/3 image name."""
+    parts = Path(_normalize_stage03_image_name(image_name)).parts
+    if len(parts) < 2:
+        return None
+    return parts[-2]
+
+
+def _load_panorama_rig_manifest(colmap_dataset_dir: Path | None) -> dict | None:
+    """Load panorama-rig metadata if the Stage 2 dataset provides it."""
+    if colmap_dataset_dir is None:
+        return None
+    manifest_path = Path(colmap_dataset_dir) / "panorama_rig.json"
+    if not manifest_path.exists():
+        return None
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _find_image_entry(images: dict, image_name: str) -> dict | None:
+    """Find an exact image entry by name, tolerating `images/` prefixes."""
+    normalized_target = _normalize_stage03_image_name(image_name)
+    for img_data in images.values():
+        if _normalize_stage03_image_name(str(img_data["name"])) == normalized_target:
+            return img_data
+    return None
+
+
+def _find_panorama_rig_frame_entries(images: dict, image_name: str, panorama_rig_manifest: dict) -> list[dict]:
+    """Find all registered panorama-rig views that belong to one ERP frame."""
+    frame_stem = Path(image_name).stem
+    valid_camera_names = {
+        str(camera["name"])
+        for camera in panorama_rig_manifest.get("cameras", [])
+    }
+    matches: list[dict] = []
+    for img_data in images.values():
+        camera_name = _camera_name_from_image_name(str(img_data["name"]))
+        if camera_name not in valid_camera_names:
+            continue
+        if _frame_stem_from_image_name(str(img_data["name"])) == frame_stem:
+            matches.append(img_data)
+    return matches
+
+
+def _camera_rotation_from_manifest(camera_name: str, panorama_rig_manifest: dict) -> np.ndarray:
+    """Return the fixed Stage 2 world-to-camera rotation for one rig camera."""
+    for camera in panorama_rig_manifest.get("cameras", []):
+        if str(camera["name"]) == camera_name:
+            return _make_rotation_matrix(float(camera["yaw_deg"]), float(camera["pitch_deg"]))
+    raise ValueError(f"Panorama-rig camera '{camera_name}' not found in manifest")
+
+
+def _build_panorama_pose_from_rig_image(image_entry: dict, panorama_rig_manifest: dict) -> np.ndarray:
+    """Derive a world-to-panorama pose from one registered rig view.
+
+    Each Stage 2 panorama-rig view uses a fixed world-to-camera rotation derived
+    from its yaw/pitch inside the panorama coordinate frame. Once a registered
+    Stage 3 image pose is known, we can recover the world-to-panorama transform
+    by factoring out that fixed sensor rotation.
+    """
+    camera_name = _camera_name_from_image_name(str(image_entry["name"]))
+    if camera_name is None:
+        raise ValueError(f"Image '{image_entry['name']}' is not a panorama-rig view")
+
+    sensor_rotation = _camera_rotation_from_manifest(camera_name, panorama_rig_manifest)
+    image_rotation = quat_to_rotation_matrix(
+        image_entry["qw"],
+        image_entry["qx"],
+        image_entry["qy"],
+        image_entry["qz"],
+    )
+    image_translation = np.array(
+        [image_entry["tx"], image_entry["ty"], image_entry["tz"]],
+        dtype=np.float64,
+    )
+
+    panorama_pose = np.eye(4, dtype=np.float64)
+    panorama_pose[:3, :3] = sensor_rotation.T @ image_rotation
+    panorama_pose[:3, 3] = sensor_rotation.T @ image_translation
+    return panorama_pose
+
+
+def _get_sparse_points_for_images(image_entries: list[dict], points3d: dict[int, dict]) -> np.ndarray:
+    """Collect the union of sparse 3D points observed across multiple images."""
+    point_ids: set[int] = set()
+    for image_entry in image_entries:
+        point_ids.update(int(pid) for pid in image_entry.get("point3D_ids", []) if int(pid) > 0)
+
+    coords: list[np.ndarray] = []
+    for point_id in sorted(point_ids):
+        if point_id not in points3d:
+            continue
+        point = points3d[point_id]
+        coords.append(np.array([point["x"], point["y"], point["z"]], dtype=np.float64))
+
+    if not coords:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.stack(coords, axis=0)
+
+
+def _direction_to_erp_uv(
+    directions: np.ndarray,
+    erp_width: int,
+    erp_height: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert unit directions in panorama coordinates to ERP pixel coordinates."""
+    x = directions[:, 0]
+    y = directions[:, 1]
+    z = directions[:, 2]
+    phi = np.arctan2(x, -z)
+    theta = np.arcsin(np.clip(y, -1.0, 1.0))
+    u = (phi + math.pi) / (2.0 * math.pi) * erp_width
+    v = (math.pi / 2.0 - theta) / math.pi * erp_height
+    return u, v
+
+
+def _align_erp_depth_to_panorama_sparse_points(
+    depth_map: np.ndarray,
+    sparse_points_3d: np.ndarray,
+    panorama_pose: np.ndarray,
+) -> tuple[np.ndarray, float, float]:
+    """Align ERP radial depth using sparse points projected into panorama space."""
+    h, w = depth_map.shape
+    ones = np.ones((sparse_points_3d.shape[0], 1), dtype=np.float64)
+    points_hom = np.hstack([sparse_points_3d.astype(np.float64), ones])
+    points_pano = (panorama_pose.astype(np.float64) @ points_hom.T).T[:, :3]
+
+    metric_depth = np.linalg.norm(points_pano, axis=1)
+    valid = metric_depth > 1e-8
+    if not np.any(valid):
+        raise ValueError("No valid sparse points remain after projection into panorama space")
+
+    directions = points_pano[valid] / metric_depth[valid][:, None]
+    u_img, v_img = _direction_to_erp_uv(directions, w, h)
+    u_idx = np.mod(np.round(u_img).astype(int), w)
+    v_idx = np.clip(np.round(v_img).astype(int), 0, h - 1)
+
+    mono_depth_vals = depth_map[v_idx, u_idx].astype(np.float64)
+    metric_depth_vals = metric_depth[valid]
+    valid_mono = mono_depth_vals > 0
+    if not np.any(valid_mono):
+        raise ValueError("No valid ERP depth values at projected sparse point locations")
+
+    mono_valid = mono_depth_vals[valid_mono]
+    metric_valid = metric_depth_vals[valid_mono]
+    ratios = metric_valid / mono_valid
+    scale = float(np.median(ratios))
+    residuals = metric_valid - scale * mono_valid
+    shift = float(np.median(residuals))
+    aligned_depth = depth_map.astype(np.float64) * scale + shift
+
+    logger.info(
+        "Panorama-rig ERP alignment: scale=%.4f, shift=%.4f, valid_points=%d/%d",
+        scale,
+        shift,
+        int(np.sum(valid_mono)),
+        sparse_points_3d.shape[0],
+    )
+    return aligned_depth.astype(np.float32), scale, shift
 
 
 def _build_camera_pose(image_entry: dict) -> np.ndarray:
@@ -128,6 +306,7 @@ def align_depth_to_colmap(
     sparse_model: dict,
     image_name: str,
     rpg360_anchor: np.ndarray | None = None,
+    colmap_dataset_dir: Path | None = None,
 ) -> tuple[np.ndarray, float, float]:
     """Align monocular depth to COLMAP sparse point metric scale.
 
@@ -156,6 +335,10 @@ def align_depth_to_colmap(
         rpg360_anchor: Optional RPG360-derived metric depth map of the same
             shape (H, W). Used for local refinement in overlap regions.
             If ``None``, no refinement is performed.
+        colmap_dataset_dir: Optional Stage 2 dataset directory. When it contains
+            `panorama_rig.json` and `image_name` refers to an ERP frame rather
+            than one virtual view, alignment falls back to a panorama-rig ERP
+            projection path.
 
     Returns:
         A tuple ``(aligned_depth, scale, shift)`` where:
@@ -174,11 +357,45 @@ def align_depth_to_colmap(
     points3d = sparse_model["points3D"]
 
     # Step 1: Find the image entry by name
-    image_entry = None
-    for _img_id, img_data in images.items():
-        if img_data["name"] == image_name:
-            image_entry = img_data
-            break
+    image_entry = _find_image_entry(images, image_name)
+    panorama_rig_manifest = _load_panorama_rig_manifest(colmap_dataset_dir)
+
+    if image_entry is None and panorama_rig_manifest is not None:
+        panorama_frame_entries = _find_panorama_rig_frame_entries(
+            images,
+            image_name,
+            panorama_rig_manifest,
+        )
+        if panorama_frame_entries:
+            best_entry = max(
+                panorama_frame_entries,
+                key=lambda entry: len(entry.get("point3D_ids", [])),
+            )
+            panorama_pose = _build_panorama_pose_from_rig_image(best_entry, panorama_rig_manifest)
+            sparse_points_3d = _get_sparse_points_for_images(panorama_frame_entries, points3d)
+            if sparse_points_3d.shape[0] == 0:
+                raise ValueError(
+                    f"No sparse 3D points found for panorama-rig frame '{image_name}'. "
+                    "Cannot compute ERP depth alignment without sparse observations."
+                )
+
+            aligned_depth, scale, shift = _align_erp_depth_to_panorama_sparse_points(
+                depth_map=depth_map,
+                sparse_points_3d=sparse_points_3d,
+                panorama_pose=panorama_pose,
+            )
+            logger.info(
+                "COLMAP panorama-rig alignment for '%s': scale=%.4f, shift=%.4f (%d sparse points across %d rig views)",
+                image_name,
+                scale,
+                shift,
+                sparse_points_3d.shape[0],
+                len(panorama_frame_entries),
+            )
+            if rpg360_anchor is not None:
+                aligned_depth = _refine_with_anchor(aligned_depth, rpg360_anchor)
+                logger.info("Applied RPG360 anchor refinement for '%s'", image_name)
+            return aligned_depth, scale, shift
 
     if image_entry is None:
         raise ValueError(

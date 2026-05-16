@@ -1,4 +1,4 @@
-"""Tests for Stage 2: Equirect→Cubemap + COLMAP Prep (T2.1–T2.12).
+"""Tests for Stage 2: Equirect->Cubemap + COLMAP Prep (T2.1-T2.12).
 
 Tests cover cubemap face extraction correctness, intrinsics computation,
 extrinsics quaternion generation, yaw diversification, and mask generation.
@@ -10,7 +10,6 @@ import math
 
 import numpy as np
 import pytest
-
 
 # ==========================================================================
 # T2.1 — Cubemap extraction
@@ -29,7 +28,7 @@ class TestExtractCubemap:
         crops = extract_cubemap(erp, fov=90)
 
         assert len(crops) == 6
-        for crop, face_name, yaw, pitch in crops:
+        for crop, face_name, _yaw, _pitch in crops:
             assert crop.ndim == 3
             assert crop.shape[2] == 3
             assert face_name in {"front", "right", "back", "left", "top", "bottom"}
@@ -59,11 +58,11 @@ class TestExtractCubemap:
         crops_90 = extract_cubemap(erp, fov=90)
         crops_60 = extract_cubemap(erp, fov=60)
 
-        for crop, name, yaw, pitch in crops_90:
+        for crop, name, _yaw, _pitch in crops_90:
             assert crop.shape[0] == crop.shape[1], f"Face {name} not square"
             assert crop.ndim == 3
 
-        for crop, name, yaw, pitch in crops_60:
+        for crop, name, _yaw, _pitch in crops_60:
             assert crop.shape[0] == crop.shape[1], f"Face {name} not square"
             assert crop.ndim == 3
 
@@ -111,8 +110,8 @@ class TestYawDiversify:
 
     def test_extract_diversified_produces_six_faces(self) -> None:
         """extract_diversified_cubemaps should return 6 faces."""
-        from sphereforge.stages.stage02_cubemap.yaw_diversify import extract_diversified_cubemaps
         from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.yaw_diversify import extract_diversified_cubemaps
 
         h, w = 64, 128
         erp = np.zeros((h, w, 3), dtype=np.uint8)
@@ -123,8 +122,8 @@ class TestYawDiversify:
 
     def test_different_frames_different_yaw(self) -> None:
         """Different frame indices should produce different yaw offsets."""
-        from sphereforge.stages.stage02_cubemap.yaw_diversify import extract_diversified_cubemaps
         from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.yaw_diversify import extract_diversified_cubemaps
 
         h, w = 64, 128
         erp = np.zeros((h, w, 3), dtype=np.uint8)
@@ -137,6 +136,101 @@ class TestYawDiversify:
         front0 = next(c for c in crops0 if c[1] == "front")[2]
         front1 = next(c for c in crops1 if c[1] == "front")[2]
         assert abs(front1 - front0 - 30.0) < 1e-6
+
+
+class TestPanoramaRig:
+    """Tests for panorama-rig virtual camera generation."""
+
+    def test_build_panorama_rig_cameras_is_fixed(self) -> None:
+        """Panorama-rig cameras should be fixed across frames and cover all views."""
+        from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.panorama_rig import build_panorama_rig_cameras
+
+        config = Stage02Config(
+            projection_layout="panorama_rig",
+            rig_yaw_steps=4,
+            rig_pitch_angles=[-35.0, 0.0, 35.0],
+        )
+        cameras = build_panorama_rig_cameras(config)
+
+        assert len(cameras) == 12
+        assert cameras[0].name == "pano_camera00"
+        assert cameras[-1].name == "pano_camera11"
+        assert {camera.camera_id for camera in cameras} == set(range(1, 13))
+
+    def test_assignment_masks_mark_non_owned_overlap_pixels(self) -> None:
+        """Panorama-rig assignment masks should exclude overlapping regions."""
+        from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.panorama_rig import (
+            compute_panorama_rig_assignment_masks,
+        )
+
+        erp = np.zeros((64, 128, 3), dtype=np.uint8)
+        config = Stage02Config(
+            projection_layout="panorama_rig",
+            fov=90,
+            overlap=15,
+            rig_yaw_steps=4,
+            rig_pitch_angles=[-35.0, 0.0, 35.0],
+        )
+        masks = compute_panorama_rig_assignment_masks(erp, config)
+
+        assert len(masks) == 12
+        assert any(np.count_nonzero(mask) > 0 for _camera, mask in masks)
+        assert all(set(np.unique(mask)).issubset({0, 255}) for _camera, mask in masks)
+
+    def test_assignment_margin_reduces_masking(self) -> None:
+        """A positive assignment margin should keep more pixels than hard nearest-camera assignment."""
+        from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.panorama_rig import (
+            compute_panorama_rig_assignment_masks,
+        )
+
+        erp = np.zeros((64, 128, 3), dtype=np.uint8)
+        strict_config = Stage02Config(
+            projection_layout="panorama_rig",
+            fov=90,
+            overlap=15,
+            rig_assignment_margin_deg=0.0,
+        )
+        relaxed_config = Stage02Config(
+            projection_layout="panorama_rig",
+            fov=90,
+            overlap=15,
+            rig_assignment_margin_deg=15.0,
+        )
+
+        strict_masks = compute_panorama_rig_assignment_masks(erp, strict_config)
+        relaxed_masks = compute_panorama_rig_assignment_masks(erp, relaxed_config)
+
+        strict_fraction = float(np.mean([np.mean(mask > 0) for _camera, mask in strict_masks]))
+        relaxed_fraction = float(np.mean([np.mean(mask > 0) for _camera, mask in relaxed_masks]))
+        assert relaxed_fraction < strict_fraction
+
+    def test_run_stage02_panorama_rig_writes_per_camera_folders(self, tmp_path) -> None:
+        """Panorama-rig layout should write images into stable per-camera subfolders."""
+        from sphereforge.common.io import read_image, write_image
+        from sphereforge.config import Stage02Config
+        from sphereforge.stages.stage02_cubemap.pipeline import run_stage02
+
+        frame_path = tmp_path / "frame_000.png"
+        write_image(frame_path, np.zeros((64, 128, 3), dtype=np.uint8))
+
+        config = Stage02Config(
+            projection_layout="panorama_rig",
+            crop_resolution=64,
+            generate_masks=False,
+            rig_yaw_steps=4,
+            rig_pitch_angles=[-35.0, 0.0, 35.0],
+        )
+        output_dir = tmp_path / "cubemaps"
+        run_stage02(config, [frame_path], output_dir, num_workers=1)
+
+        assert (output_dir / "panorama_rig.json").exists()
+        assert (output_dir / "images" / "pano_camera00" / "frame_000.png").exists()
+        assert (output_dir / "masks" / "pano_camera11" / "frame_000.png").exists()
+        mask = read_image(output_dir / "masks" / "pano_camera11" / "frame_000.png")
+        assert np.mean(mask) == 0.0
 
 
 # ==========================================================================

@@ -62,8 +62,11 @@ def write_image(path: Path, image: np.ndarray) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    success = cv2.imwrite(str(path), bgr)
+    if image.ndim == 2:
+        success = cv2.imwrite(str(path), image)
+    else:
+        bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        success = cv2.imwrite(str(path), bgr)
     if not success:
         raise ValueError(f"Failed to write image to: {path}")
 
@@ -391,4 +394,3 @@ def write_ply(
 # ``io.py`` only exposes thin wrappers here for backwards compatibility.
 # New code should import from ``sphereforge.common.colmap_helpers`` directly.
 # ---------------------------------------------------------------------------
-

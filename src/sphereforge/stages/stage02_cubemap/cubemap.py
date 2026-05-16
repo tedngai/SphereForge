@@ -111,6 +111,51 @@ def _make_rotation_matrix(yaw_deg: float, pitch_deg: float) -> NDArray[np.float6
     return rx @ ry
 
 
+def extract_perspective_view(
+    erp_image: np.ndarray,
+    yaw_deg: float,
+    pitch_deg: float,
+    fov_deg: float,
+) -> np.ndarray:
+    """Extract a single rectilinear perspective view from an ERP image."""
+    if erp_image.ndim < 3:
+        raise ValueError(
+            f"Expected ERP image with shape (H, W, C), got {erp_image.shape}"
+        )
+
+    erp_h, erp_w = erp_image.shape[:2]
+    render_res = max(256, int(erp_w / 4 * fov_deg / 90))
+    focal = render_res / (2.0 * math.tan(math.radians(fov_deg) / 2.0))
+    cx_out = render_res / 2.0
+    cy_out = render_res / 2.0
+
+    rotation = _make_rotation_matrix(yaw_deg, pitch_deg)
+    u_coords = np.arange(render_res, dtype=np.float64)
+    v_coords = np.arange(render_res, dtype=np.float64)
+    uu, vv = np.meshgrid(u_coords, v_coords)
+
+    dx = (uu - cx_out) / focal
+    dy = (vv - cy_out) / focal
+    dz = np.ones_like(dx)
+
+    norms = np.sqrt(dx * dx + dy * dy + dz * dz)
+    dx /= norms
+    dy /= norms
+    dz /= norms
+
+    dirs_cam = np.stack([dx, dy, dz], axis=-1)
+    dirs_world = np.einsum("ij,...j->...i", rotation.T, dirs_cam)
+    erp_u, erp_v = _direction_to_erp_uv(dirs_world, erp_w, erp_h)
+
+    return cv2.remap(
+        erp_image,
+        erp_u.astype(np.float32),
+        erp_v.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_WRAP,
+    )
+
+
 def extract_cubemap(
     erp_image: np.ndarray,
     fov: int = 90,
@@ -161,10 +206,6 @@ def extract_cubemap(
     # covers the total_fov, then the crop_resolution is the output size.
     render_res = max(256, int(erp_w / 4 * scale))
 
-    focal = render_res / (2.0 * math.tan(math.radians(total_fov) / 2.0))
-    cx_out = render_res / 2.0
-    cy_out = render_res / 2.0
-
     results: list[tuple[np.ndarray, str, float, float]] = []
     faces_to_process = CUBEMAP_FACES[:n_faces]
 
@@ -181,52 +222,11 @@ def extract_cubemap(
     )
 
     for face_name, face_yaw, face_pitch in faces_to_process:
-        # Build rotation that takes the face's view direction to the front
-        R = _make_rotation_matrix(face_yaw, face_pitch)
-
-        # Create pixel coordinate grid for the output crop
-        # Pixel (u, v) maps to direction:
-        #   d_cam = [(u - cx) / focal, (v - cy) / focal, 1.0]
-        # then rotate to world: d_world = R^T @ d_cam  (since R rotates
-        # world->cam, we need cam->world = R^T)
-        u_coords = np.arange(render_res, dtype=np.float64)
-        v_coords = np.arange(render_res, dtype=np.float64)
-        uu, vv = np.meshgrid(u_coords, v_coords)
-
-        # Direction vectors in camera frame
-        dx = (uu - cx_out) / focal
-        dy = (vv - cy_out) / focal
-        dz = np.ones_like(dx)
-
-        # Normalise to unit vectors
-        norms = np.sqrt(dx * dx + dy * dy + dz * dz)
-        dx /= norms
-        dy /= norms
-        dz /= norms
-
-        # Stack into (render_res, render_res, 3)
-        dirs_cam = np.stack([dx, dy, dz], axis=-1)
-
-        # Rotate to world frame: R^T @ d_cam
-        # R is world->cam rotation; we want cam->world so use R^T
-        R_inv = R.T  # cam->world
-        dirs_world = np.einsum("ij,...j->...i", R_inv, dirs_cam)
-
-        # Convert world directions to ERP pixel coordinates
-        erp_u, erp_v = _direction_to_erp_uv(dirs_world, erp_w, erp_h)
-
-        # Remap using OpenCV
-        map_x = erp_u.astype(np.float32)
-        map_y = erp_v.astype(np.float32)
-
-        # Handle boundary: wrap horizontally (ERP is 360° wrap-around)
-        # Use BORDER_WRAP for horizontal, BORDER_REFLECT for vertical
-        crop = cv2.remap(
+        crop = extract_perspective_view(
             erp_image,
-            map_x,
-            map_y,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_WRAP,
+            yaw_deg=face_yaw,
+            pitch_deg=face_pitch,
+            fov_deg=total_fov,
         )
 
         logger.debug(

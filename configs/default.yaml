@@ -12,11 +12,16 @@ stage01:
   max_luminance: 245.0
 
 stage02:
+  projection_layout: panorama_rig
   n_faces: 6
   fov: 90
   overlap: 15
   yaw_offset_step: 30
   crop_resolution: 1024
+  rig_yaw_steps: 4
+  rig_pitch_angles: [-35.0, 0.0, 35.0]
+  rig_use_assignment_masks: false
+  rig_assignment_margin_deg: 15.0
   generate_masks: true
   mask_classes: ["person", "vehicle"]
   overexposure_threshold: 250
@@ -29,6 +34,11 @@ stage03:
   matcher_type: sequential+vocabulary_tree
   refine_intrinsics: false
   dense_reconstruction: true
+  min_registration_fraction: 0.25
+  panorama_temporal_window: 2
+  panorama_pair_strategy: all
+  panorama_use_match_list: false
+  panorama_use_pycolmap_rig: false
 
 stage04:
   depth_model: dap

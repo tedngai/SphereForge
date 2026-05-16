@@ -14,6 +14,7 @@ SphereForge is a Python project implementing the pipeline described in `PIPELINE
 |------|---------|
 | `TASKS.md` | Complete task list with IDs, descriptions, dependencies, and status |
 | `PROGRESS.md` | Log of completed tasks with timestamps, outputs, and notes |
+| `TRAINING_CONTEXT.md` | Rolling handoff for long-running training/debugging work, rerun outcomes, and current recommended presets |
 | `PIPELINE_DESIGN_V2.md` | Full pipeline specification (parent directory) |
 | `src/sphereforge/` | Python package root |
 | `src/sphereforge/stages/` | One subdirectory per pipeline stage |
@@ -25,16 +26,17 @@ SphereForge is a Python project implementing the pipeline described in `PIPELINE
 
 1. **Find your task** in `TASKS.md`. Your assignment will reference a task ID like `T2.3`.
 2. **Check prerequisites** in `PROGRESS.md`. Every task lists dependencies — confirm those tasks are marked DONE before you start.
-3. **Read the spec** in `PIPELINE_DESIGN_V2.md`. Find the stage and step that corresponds to your task. The design doc has the full technical details.
-4. **Write code** following the project conventions below.
-5. **Write tests** for your code. Every task should have at least one test.
-6. **Log completion** in `PROGRESS.md`. Append an entry with:
+3. **Check `TRAINING_CONTEXT.md` when working on reruns/debugging.** If the task touches long-running training, OOMs, guarded configs, or current artifact quality, treat that file as the latest handoff context.
+4. **Read the spec** in `PIPELINE_DESIGN_V2.md`. Find the stage and step that corresponds to your task. The design doc has the full technical details.
+5. **Write code** following the project conventions below.
+6. **Write tests** for your code. Every task should have at least one test.
+7. **Log completion** in `PROGRESS.md`. Append an entry with:
    - Task ID
    - Timestamp (ISO 8601)
    - What you implemented (brief)
    - Files created/modified
    - Any deviations from the spec or issues encountered
-7. **Update task status** in `TASKS.md`. Change the task status from `TODO` to `DONE`.
+8. **Update task status** in `TASKS.md`. Change the task status from `TODO` to `DONE`.
 
 ## Project Conventions
 

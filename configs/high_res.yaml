@@ -1,0 +1,48 @@
+# Higher-quality config — denser seeding, longer training, bigger cap.
+# For 5760x2880 360° scenes. Expects 100+ GB unified memory.
+
+stage05:
+  stride: 10
+  stride_low_confidence: 20
+  dedup_distance: "auto"
+
+stage06:
+  iterations: 20000
+  sh_degree: 1
+  densify_until_iter: 15000
+  densify_every: 500
+  prune_every: 2000
+  max_gaussians: 3000000
+  opacity_reset_every: 6000
+  prune_min_opacity: 0.005
+  prune_max_scale_ratio: 0.1
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.05
+  d_normal_weight: 0.0
+  depth_reg_weight: 0.0
+  use_intersection_depth: false
+  checkpoint_every: 2000
+
+stage07:
+  refine_backend: "sharegs_gsdiff"
+  refine_cameras: 12
+  refine_rounds: 2
+  refine_hole_threshold: 0.02
+  sharegs_enabled: true
+  sharegs_homogenization: true
+  sharegs_patch_reuse: true
+  sharegs_patch_reuse_max_new: 2000
+  max_gaussians: 2000000
+  sharegs_optimize_iters: 0
+  gap_missing_geo_weight: 2.0
+  gap_behind_fg_weight: 1.0
+  gap_boundary_weight: 0.0
+  gsdiff_backend: "flux2_klein"
+  gsdiff_lpips_threshold: 0.5
+  gsdiff_strict_backend: false
+  gsdiff_distill_iters: 50
+
+stage08:
+  max_scale: "auto"
+  export_format: ["ply", "html"]
+  compact_box_culling: true

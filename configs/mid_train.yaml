@@ -1,5 +1,6 @@
 # Midpoint between rerun_moderate and long_train.
 # Keeps Stage 5 much denser than stride=16, but avoids the 4x jump to stride=8.
+# Updated 2026-05-14: re-enabled GS-Diff backend (transformers + diffusers now available).
 
 stage05:
   stride: 12
@@ -20,14 +21,23 @@ stage06:
   checkpoint_every: 2000
 
 stage07:
-  refine_backend: "gsfix3d"
+  refine_backend: "sharegs_gsdiff"  # was gsfix3d; GS-Diff backend now available
   refine_cameras: 12
-  refine_rounds: 1
+  refine_rounds: 2                  # increased from 1 for GS-Diff effectiveness
+  refine_hole_threshold: 0.02       # stop when hole coverage drops below 2%
   sharegs_enabled: true
+  sharegs_homogenization: true
   sharegs_patch_reuse: true
   sharegs_patch_reuse_max_new: 1000
-  max_gaussians: 1500000
-  sharegs_optimize_iters: 200
+  max_gaussians: 1100000           # tighter cap for memory safety (from 1.5M)
+  sharegs_optimize_iters: 0         # disabled: memory pressure with >400k new Gaussians
+  gap_missing_geo_weight: 2.0       # new: prioritize real missing geometry
+  gap_behind_fg_weight: 1.0         # new: behind-foreground holes
+  gap_boundary_weight: 0.0          # new: skip boundary holes entirely
+  gsdiff_backend: "flux2_klein"       # FLUX.2 Klein 9B inpainting (much better than SD-1.5)
+  gsdiff_lpips_threshold: 0.6       # raised from 0.4; Flux inpainting is more faithful
+  gsdiff_strict_backend: false      # skip GS-Diff if backend unavailable
+  gsdiff_distill_iters: 50          # distillation iterations per novel camera
 
 stage08:
   max_scale: "auto"

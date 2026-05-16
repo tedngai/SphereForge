@@ -31,6 +31,7 @@ Import conventions:
 
 from __future__ import annotations
 
+from sphereforge.stages.stage07_occlusion.blend_fill import blend_fill
 from sphereforge.stages.stage07_occlusion.distillation import distill_inpaint
 from sphereforge.stages.stage07_occlusion.eschernet import EscherNetWrapper
 from sphereforge.stages.stage07_occlusion.gap_classification import classify_gaps
@@ -49,6 +50,7 @@ from sphereforge.stages.stage07_occlusion.softmax_depth import softmax_depth_los
 
 __all__ = [
     "EscherNetWrapper",
+    "blend_fill",
     "classify_gaps",
     "compute_hole_coverage",
     "detect_holes",

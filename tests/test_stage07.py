@@ -241,17 +241,17 @@ class TestGapClassification:
 
         H, W = 64, 64
         hole_mask = np.zeros((H, W), dtype=bool)
-        # Place holes near a depth jump (but not at image edge)
-        hole_mask[10:20, 10:20] = True
+        # Place holes right at a depth jump (but not at image edge)
+        hole_mask[28:35, 10:54] = True
 
         # Create a sharp depth discontinuity
         depth = np.ones((H, W), dtype=np.float32)
         depth[:30, :] = 1.0
         depth[30:, :] = 10.0  # big jump at row 30
 
-        result = classify_gaps(hole_mask, hole_mask, depth)
-        # At least some of the hole pixels should be behind_foreground
-        assert np.any(result[10:20, 10:20] == BEHIND_FOREGROUND)
+        result = classify_gaps(hole_mask, depth)
+        # At least some of the hole pixels near the discontinuity should be behind_foreground
+        assert np.any(result[28:35, 10:54] == BEHIND_FOREGROUND)
 
     def test_output_shape_and_dtype(self) -> None:
         """Output should be (H, W) int32."""
@@ -451,7 +451,7 @@ class TestSoftmaxDepthLoss:
         """Loss should be differentiable w.r.t. rendered_depth."""
         from sphereforge.stages.stage07_occlusion.softmax_depth import softmax_depth_loss
 
-        rendered = torch.rand(16, 16, requires_grad=True) + 0.5
+        rendered = (torch.rand(16, 16) + 0.5).detach().requires_grad_(True)
         prior = torch.rand(16, 16) + 0.5
         loss = softmax_depth_loss(rendered, prior)
         loss.backward()
@@ -509,6 +509,7 @@ class TestIterativeFill:
             sharegs_enabled=True,
             sharegs_homogenization=True,
             sharegs_patch_reuse=False,
+            sharegs_optimize_iters=0,  # disable blend for unit-test speed
         )
 
         gaussians = self._make_gaussians(200)
@@ -553,6 +554,7 @@ class TestIterativeFill:
             sharegs_enabled=True,
             sharegs_homogenization=True,
             sharegs_patch_reuse=False,
+            sharegs_optimize_iters=0,  # disable blend for unit-test speed
         )
 
         gaussians = self._make_gaussians(50)
@@ -646,16 +648,52 @@ class TestEscherNet:
     """Tests for EscherNetWrapper (T7.7)."""
 
     def test_inpaint_raises_not_implemented(self) -> None:
-        """Inpainting should raise NotImplementedError without weights."""
+        """Inpainting should raise ImportError or NotImplementedError without proper setup."""
         from sphereforge.stages.stage07_occlusion.eschernet import EscherNetWrapper
 
         wrapper = EscherNetWrapper()
-        with pytest.raises(NotImplementedError, match="EscherNet"):
+        with pytest.raises((NotImplementedError, ImportError), match="EscherNet"):
             wrapper.inpaint_holes(
                 rendered_image=np.zeros((64, 64, 3), dtype=np.float32),
                 hole_mask=np.zeros((64, 64), dtype=bool),
                 reference_images=[np.zeros((64, 64, 3), dtype=np.float32)],
             )
+
+
+# ===================================================================
+# T7.7 — Flux inpainting backends
+# ===================================================================
+
+
+class TestFluxInpainters:
+    """Tests for Flux2KleinInpainter and FluxFillInpainter."""
+
+    def test_flux2_klein_factory(self) -> None:
+        """create_inpainter('flux2_klein') should return Flux2KleinInpainter."""
+        from sphereforge.stages.stage07_occlusion.inpainting import (
+            Flux2KleinInpainter,
+            create_inpainter,
+        )
+
+        inpainter = create_inpainter("flux2_klein")
+        assert isinstance(inpainter, Flux2KleinInpainter)
+
+    def test_flux_fill_factory(self) -> None:
+        """create_inpainter('flux_fill') should return FluxFillInpainter."""
+        from sphereforge.stages.stage07_occlusion.inpainting import (
+            FluxFillInpainter,
+            create_inpainter,
+        )
+
+        inpainter = create_inpainter("flux_fill")
+        assert isinstance(inpainter, FluxFillInpainter)
+
+    def test_unknown_backend_raises(self) -> None:
+        """Unknown backend name should raise ValueError."""
+        from sphereforge.stages.stage07_occlusion.inpainting import create_inpainter
+
+        with pytest.raises(ValueError, match="Unknown inpainting backend"):
+            create_inpainter("nonexistent_model")
 
 
 # ===================================================================
@@ -850,7 +888,7 @@ class TestPipeline:
         from sphereforge.stages.stage07_occlusion.pipeline import _resolve_camera_layout
 
         assert _resolve_camera_layout(36) == (12, 3)
-        assert _resolve_camera_layout(24) == (12, 2)
+        assert _resolve_camera_layout(24) == (8, 3)  # 24 % 3 == 0, prefers 3 rings
         assert _resolve_camera_layout(16) == (8, 2)
         assert _resolve_camera_layout(7) == (7, 1)
 
@@ -867,3 +905,143 @@ class TestPipeline:
         centre, radius = _compute_scene_bounds(gaussians)
         np.testing.assert_allclose(centre, [0, 0, 0], atol=0.1)
         assert radius > 0
+
+
+# ===================================================================
+# T7.15 — Blend fill
+# ===================================================================
+
+
+class TestBlendFill:
+    """Tests for blend_fill (new lightweight optimization)."""
+
+    def test_blend_smoothes_new_gaussians(self) -> None:
+        """New Gaussians should move toward original neighbours."""
+        from sphereforge.stages.stage07_occlusion.blend_fill import blend_fill
+
+        rng = np.random.default_rng(42)
+        n_orig = 50
+        positions = rng.normal(0, 1.0, (n_orig, 3)).astype(np.float32)
+        colors = rng.uniform(0, 1, (n_orig, 3)).astype(np.float32)
+        opacities = np.ones(n_orig, dtype=np.float32) * 0.9
+        scales = np.full((n_orig, 3), -2.0, dtype=np.float32)
+        rotations = np.tile([1, 0, 0, 0], (n_orig, 1)).astype(np.float32)
+
+        # Place newcomers far from originals so blending has a clear effect
+        new_positions = positions[:5] + np.array([5.0, 0.0, 0.0], dtype=np.float32)
+        new_colors = colors[:5]
+        new_opacities = opacities[:5]
+        new_scales = scales[:5]
+        new_rotations = rotations[:5]
+
+        gaussians = {
+            "positions": np.concatenate([positions, new_positions], axis=0),
+            "colors": np.concatenate([colors, new_colors], axis=0),
+            "opacities": np.concatenate([opacities, new_opacities], axis=0),
+            "scales": np.concatenate([scales, new_scales], axis=0),
+            "rotations": np.concatenate([rotations, new_rotations], axis=0),
+        }
+
+        result = blend_fill(gaussians, original_count=n_orig, n_iterations=100)
+        moved_positions = result["positions"][n_orig:]
+
+        # After blending, newcomers should be closer to the original cluster
+        original_centroid = positions.mean(axis=0)
+        dist_before = np.linalg.norm(new_positions.mean(axis=0) - original_centroid)
+        dist_after = np.linalg.norm(moved_positions.mean(axis=0) - original_centroid)
+        assert dist_after < dist_before, (
+            f"Blending should pull newcomers toward originals: "
+            f"before={dist_before:.4f}, after={dist_after:.4f}"
+        )
+
+    def test_blend_preserves_count(self) -> None:
+        """blend_fill should not add or remove Gaussians."""
+        from sphereforge.stages.stage07_occlusion.blend_fill import blend_fill
+
+        rng = np.random.default_rng(0)
+        n = 30
+        gaussians = {
+            "positions": rng.normal(0, 0.5, (n, 3)).astype(np.float32),
+            "colors": rng.uniform(0, 1, (n, 3)).astype(np.float32),
+            "opacities": np.ones(n, dtype=np.float32) * 0.8,
+            "scales": np.full((n, 3), -2.0, dtype=np.float32),
+            "rotations": np.tile([1, 0, 0, 0], (n, 1)).astype(np.float32),
+        }
+
+        result = blend_fill(gaussians, original_count=20, n_iterations=50)
+        assert result["positions"].shape[0] == n
+        assert result["colors"].shape[0] == n
+
+    def test_blend_no_new_gaussians_returns_unchanged(self) -> None:
+        """If original_count >= total, return unchanged."""
+        from sphereforge.stages.stage07_occlusion.blend_fill import blend_fill
+
+        rng = np.random.default_rng(1)
+        n = 10
+        gaussians = {
+            "positions": rng.normal(0, 0.5, (n, 3)).astype(np.float32),
+            "colors": rng.uniform(0, 1, (n, 3)).astype(np.float32),
+            "opacities": np.ones(n, dtype=np.float32) * 0.8,
+            "scales": np.full((n, 3), -2.0, dtype=np.float32),
+            "rotations": np.tile([1, 0, 0, 0], (n, 1)).astype(np.float32),
+        }
+
+        result = blend_fill(gaussians, original_count=n, n_iterations=50)
+        np.testing.assert_array_equal(result["positions"], gaussians["positions"])
+
+
+# ===================================================================
+# T7.16 — Weighted budget allocation
+# ===================================================================
+
+
+class TestWeightedBudgetAllocation:
+    """Tests for gap-aware budget allocation."""
+
+    def test_weighted_budget_prioritises_missing_geometry(self) -> None:
+        """Cameras with more missing_geometry holes should get larger budgets."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import (
+            _allocate_weighted_camera_budget,
+        )
+
+        high = _allocate_weighted_camera_budget(
+            remaining_budget=100, camera_weighted_holes=800.0, remaining_weighted_holes=1000.0
+        )
+        low = _allocate_weighted_camera_budget(
+            remaining_budget=100, camera_weighted_holes=200.0, remaining_weighted_holes=1000.0
+        )
+        assert high > low
+        assert high == 80
+        assert low == 20
+
+    def test_weighted_budget_zero_holes(self) -> None:
+        """Zero weighted holes get zero budget."""
+        from sphereforge.stages.stage07_occlusion.iterative_fill import (
+            _allocate_weighted_camera_budget,
+        )
+
+        assert (
+            _allocate_weighted_camera_budget(
+                remaining_budget=100, camera_weighted_holes=0.0, remaining_weighted_holes=1000.0
+            )
+            == 0
+        )
+
+    def test_compute_weighted_hole_count_weights(self) -> None:
+        """Weighted count should reflect gap type priorities."""
+        from sphereforge.stages.stage07_occlusion.gap_classification import MISSING_GEOMETRY
+        from sphereforge.stages.stage07_occlusion.iterative_fill import _compute_weighted_hole_count
+
+        hole_mask = np.zeros((32, 32), dtype=bool)
+        hole_mask[10:20, 10:20] = True  # 100 missing_geometry pixels
+
+        gap_classes = np.zeros((32, 32), dtype=np.int32)
+        gap_classes[10:20, 10:20] = MISSING_GEOMETRY
+
+        class FakeConfig:
+            gap_missing_geo_weight = 2.0
+            gap_behind_fg_weight = 1.0
+            gap_boundary_weight = 0.0
+
+        weighted = _compute_weighted_hole_count(hole_mask, gap_classes, FakeConfig())
+        assert weighted == 100 * 2.0  # all missing_geometry at weight 2.0

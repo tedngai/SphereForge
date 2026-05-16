@@ -1,6 +1,6 @@
-"""Tests for Stage 4: Dense Depth Estimation (T4.1–T4.7).
+"""Tests for Stage 4: Dense Depth Estimation (T4.1-T4.7).
 
-All model inference is mocked — no GPU required.
+All model inference is mocked - no GPU required.
 """
 
 from __future__ import annotations
@@ -282,11 +282,87 @@ class TestAlignDepthToColmap:
             },
         }
 
-        aligned, scale, shift = align_depth_to_colmap(
+        aligned, scale, _shift = align_depth_to_colmap(
             depth, sparse_model, "test.png", rpg360_anchor=anchor
         )
         assert aligned.shape == (h, w)
         assert scale > 0
+
+    def test_panorama_rig_frame_name_uses_erp_alignment(self, tmp_path: Path) -> None:
+        """Panorama-rig sparse models should align ERP depths by frame stem."""
+        from sphereforge.stages.stage04_depth.depth_alignment import align_depth_to_colmap
+
+        h, w = 64, 128
+        true_scale = 3.0
+        true_shift = 0.2
+        metric_depth = np.random.uniform(2.0, 8.0, (h, w)).astype(np.float32)
+        mono_depth = ((metric_depth - true_shift) / true_scale).astype(np.float32)
+
+        rng = np.random.RandomState(7)
+        points_world = rng.normal(size=(24, 3)).astype(np.float64)
+        points_world[:, 2] += 3.0
+        metric_range = np.linalg.norm(points_world, axis=1)
+        directions = points_world / metric_range[:, None]
+        phi = np.arctan2(directions[:, 0], -directions[:, 2])
+        theta = np.arcsin(np.clip(directions[:, 1], -1.0, 1.0))
+        u = (phi + np.pi) / (2.0 * np.pi) * w
+        v = (np.pi / 2.0 - theta) / np.pi * h
+        u_idx = np.mod(np.round(u).astype(int), w)
+        v_idx = np.clip(np.round(v).astype(int), 0, h - 1)
+        for idx in range(len(u_idx)):
+            mono_depth[v_idx[idx], u_idx[idx]] = (metric_range[idx] - true_shift) / true_scale
+
+        dataset_dir = tmp_path / "dataset"
+        dataset_dir.mkdir()
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"projection_layout":"panorama_rig","fov":90,"overlap":15,'
+            '"cameras":[{"name":"pano_camera00","yaw_deg":0.0,"pitch_deg":0.0,"camera_id":1}]}',
+            encoding="utf-8",
+        )
+
+        sparse_model = {
+            "cameras": {
+                1: {
+                    "model": "PINHOLE",
+                    "width": 32,
+                    "height": 32,
+                    "params": [20.0, 20.0, 16.0, 16.0],
+                }
+            },
+            "images": {
+                1: {
+                    "name": "pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                    "camera_id": 1,
+                    "point3D_ids": list(range(1, len(points_world) + 1)),
+                }
+            },
+            "points3D": {
+                idx + 1: {
+                    "x": float(points_world[idx, 0]),
+                    "y": float(points_world[idx, 1]),
+                    "z": float(points_world[idx, 2]),
+                }
+                for idx in range(len(points_world))
+            },
+        }
+
+        aligned_depth, scale, shift = align_depth_to_colmap(
+            depth_map=mono_depth,
+            sparse_model=sparse_model,
+            image_name="frame_000.png",
+            colmap_dataset_dir=dataset_dir,
+        )
+
+        assert aligned_depth.shape == (h, w)
+        assert abs(scale - true_scale) < 0.5
+        assert abs(shift - true_shift) < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -297,15 +373,23 @@ class TestAlignDepthToColmap:
 class TestModelFactory:
     """Tests for model_factory.get_depth_estimator."""
 
-    def test_panda_returns_correct_type(self) -> None:
-        """Factory should return PanDAModel for 'panda'."""
+    def test_stub_backend_detection(self) -> None:
+        """Diagnostics helper should flag the current shipped backends as stubs."""
+        from sphereforge.stages.stage04_depth.model_factory import is_stub_depth_model
+
+        assert is_stub_depth_model("dap") is True
+        assert is_stub_depth_model("panda") is True
+        assert is_stub_depth_model("rpg360") is True
+
+    def test_panda_returns_dap_alias(self) -> None:
+        """Deprecated 'panda' should resolve to the DAP alias path."""
+        from sphereforge.models.dap_model import DAPModel
         from sphereforge.stages.stage04_depth.model_factory import (
             get_depth_estimator,
         )
-        from sphereforge.stages.stage04_depth.panda_model import PanDAModel
 
         model = get_depth_estimator("panda")
-        assert isinstance(model, PanDAModel)
+        assert isinstance(model, DAPModel)
 
     def test_rpg360_returns_correct_type(self) -> None:
         """Factory should return Metric3DV2 for 'rpg360'."""
@@ -323,7 +407,7 @@ class TestModelFactory:
             get_depth_estimator,
         )
 
-        with pytest.raises(NotImplementedError, match="DA360"):
+        with pytest.raises(NotImplementedError, match="da360"):
             get_depth_estimator("da360")
 
     def test_unknown_model_raises_value_error(self) -> None:
@@ -511,14 +595,16 @@ class TestRunStage04:
                 output_dir=output_dir,
             )
 
-            # Verify estimator was created
-            mock_get_estimator.assert_called_once()
+            # Verify estimator was created per frame (thread-safe path)
+            assert mock_get_estimator.call_count == 3
 
             # Verify depth was estimated for each frame
             assert mock_estimator.estimate_depth.call_count == 3
 
             # Verify alignment was called for each frame
             assert mock_align.call_count == 3
+            for call in mock_align.call_args_list:
+                assert call.kwargs["colmap_dataset_dir"] == cubemap_dir
 
             # Verify depth was written for each frame
             assert mock_write_depth.call_count >= 3
@@ -529,7 +615,11 @@ class TestRunStage04:
             # Verify return structure
             assert "depth_paths" in result
             assert "scene_params" in result
+            assert result["diagnostics"]["stub_depth_backend"] is True
+            assert result["diagnostics"]["aligned_frames"] == 3
             assert len(result["depth_paths"]) == 3
+            diagnostics_text = (output_dir / "depth_diagnostics.json").read_text(encoding="utf-8")
+            assert '"stub_depth_backend": true' in diagnostics_text
 
     @patch("sphereforge.stages.stage04_depth.pipeline.analyze_depth_scene")
     @patch("sphereforge.stages.stage04_depth.pipeline.align_depth_to_colmap")

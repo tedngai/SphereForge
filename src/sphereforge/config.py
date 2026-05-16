@@ -23,11 +23,28 @@ class Stage01Config(BaseModel):
 class Stage02Config(BaseModel):
     """Stage 2: Equirect→Cubemap + COLMAP Prep."""
 
+    projection_layout: Literal["cubemap", "panorama_rig"] = Field(
+        default="panorama_rig",
+        description="Perspective view layout used for SfM preprocessing",
+    )
     n_faces: int = Field(default=6, description="Cubemap faces per frame")
     fov: int = Field(default=90, description="Degrees per cubemap face")
     overlap: int = Field(default=15, description="Degrees of overlap between faces")
     yaw_offset_step: int = Field(default=30, description="Yaw offset increment per frame group")
     crop_resolution: int = Field(default=1024, description="Pixels per crop side")
+    rig_yaw_steps: int = Field(default=4, description="Number of virtual cameras around the horizon")
+    rig_pitch_angles: list[float] = Field(
+        default_factory=lambda: [-35.0, 0.0, 35.0],
+        description="Pitch angles for panorama_rig virtual cameras",
+    )
+    rig_use_assignment_masks: bool = Field(
+        default=False,
+        description="Whether panorama-rig overlapping regions should be hard-assigned to one virtual camera before feature extraction",
+    )
+    rig_assignment_margin_deg: float = Field(
+        default=15.0,
+        description="Keep pixels for a panorama-rig camera when its angular error is within this margin of the best camera",
+    )
     generate_masks: bool = Field(default=True, description="Enable YOLO dynamic object masking")
     mask_classes: list[str] = Field(
         default=["person", "vehicle"], description="YOLO classes to mask"
@@ -55,6 +72,26 @@ class Stage03Config(BaseModel):
     )
     refine_intrinsics: bool = Field(default=False, description="Intrinsics are known from Stage 2")
     dense_reconstruction: bool = Field(default=True, description="Run COLMAP patch-match stereo")
+    min_registration_fraction: float = Field(
+        default=0.25,
+        description="Require at least this fraction of Stage 2 images to register before later stages continue (0 disables gate)",
+    )
+    panorama_temporal_window: int = Field(
+        default=2,
+        description="For panorama-rig datasets, allow matches across this many forward frame steps",
+    )
+    panorama_pair_strategy: Literal["neighbors", "all"] = Field(
+        default="all",
+        description="How broadly to connect panorama-rig cameras across time",
+    )
+    panorama_use_match_list: bool = Field(
+        default=False,
+        description="Whether panorama-rig datasets should restrict retrieval to an explicit allowed-pairs list",
+    )
+    panorama_use_pycolmap_rig: bool = Field(
+        default=False,
+        description="Whether panorama-rig datasets should use the optional pycolmap rig-aware reconstruction path when explicitly enabled via environment",
+    )
 
 
 class Stage04Config(BaseModel):
@@ -185,10 +222,27 @@ class Stage07Config(BaseModel):
         description="Hard cap on total Gaussian count during Stage 7 refinement",
     )
 
+    # Gap-aware budget tuning
+    gap_missing_geo_weight: float = Field(
+        default=2.0,
+        description="Budget weight for MISSING_GEOMETRY holes (most important)",
+    )
+    gap_behind_fg_weight: float = Field(
+        default=1.0,
+        description="Budget weight for BEHIND_FOREGROUND holes",
+    )
+    gap_boundary_weight: float = Field(
+        default=0.0,
+        description="Budget weight for AT_BOUNDARY holes (usually skipped)",
+    )
+
     # GS-Diff (V2 replaces GSFix3D)
     # GS-Diff inpainting backend
-    gsdiff_backend: Literal["sd", "eschernet"] = Field(
-        default="sd", description="Inpainting backend: 'sd' (Stable Diffusion, recommended) or 'eschernet' (multi-view, RAIL-M license)"
+    gsdiff_backend: Literal["flux2_klein", "flux_fill", "sd", "eschernet"] = Field(
+        default="flux2_klein",
+        description="Inpainting backend: 'flux2_klein' (FLUX.2 Klein 9B, recommended), "
+        "'flux_fill' (FLUX.1-Fill-dev, 12B), 'sd' (Stable Diffusion 1.5, legacy), "
+        "or 'eschernet' (multi-view, RAIL-M license)",
     )
     gsdiff_prompt: str = Field(
         default="clean indoor scene, high quality, detailed", description="Text prompt for SD inpainting"
@@ -201,6 +255,10 @@ class Stage07Config(BaseModel):
     gsdiff_strict_backend: bool = Field(
         default=False,
         description="Raise instead of skipping when the configured GS-Diff backend is unavailable",
+    )
+    gsdiff_distill_iters: int = Field(
+        default=100,
+        description="Number of distillation iterations per novel camera",
     )
     refine_rounds: int = Field(
         default=2, description="V2: reduced from 3 (ShareGS pre-pass handles easy gaps)"

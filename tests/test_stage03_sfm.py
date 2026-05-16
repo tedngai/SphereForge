@@ -11,10 +11,12 @@ All subprocess calls are mocked — no COLMAP installation required.
 
 from __future__ import annotations
 
+import os
 import struct
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from sphereforge.config import Stage03Config
@@ -23,7 +25,14 @@ from sphereforge.stages.stage03_sfm.dense_reconstruction import run_dense_recons
 from sphereforge.stages.stage03_sfm.feature_extraction import run_feature_extraction
 from sphereforge.stages.stage03_sfm.feature_matching import run_feature_matching
 from sphereforge.stages.stage03_sfm.model_reader import read_dense_model, read_sparse_model
-from sphereforge.stages.stage03_sfm.pipeline import run_stage03
+from sphereforge.stages.stage03_sfm.pipeline import _build_stage03_image_list, run_stage03
+from sphereforge.stages.stage03_sfm.pycolmap_probe import (
+    _build_sensor_from_rig_rotations,
+    _group_database_images_by_frame,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +198,30 @@ class TestFeatureExtractionCLI:
         cmd = mock_run.call_args[0][0]
         assert "--image_list_path" in cmd
 
+    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
+    def test_single_camera_per_folder_flag(
+        self, mock_run, mock_which, tmp_path: Path
+    ) -> None:
+        """Panorama-rig datasets should use per-folder camera assignment."""
+        mock_run.return_value = _make_success_result()
+
+        db_path = tmp_path / "database.db"
+        img_dir = tmp_path / "images"
+        (img_dir / "pano_camera00").mkdir(parents=True)
+        (img_dir / "pano_camera00" / "frame001.png").touch()
+
+        run_feature_extraction(
+            database_path=db_path,
+            image_dir=img_dir,
+            single_camera_per_folder=True,
+            image_list=["pano_camera00/frame001.png"],
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--ImageReader.single_camera_per_folder" in cmd
+        assert "--image_list_path" in cmd
+
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value=None)
     def test_colmap_not_found_raises(self, mock_which, tmp_path: Path) -> None:
         """Should raise RuntimeError when COLMAP is not on PATH."""
@@ -249,6 +282,22 @@ class TestFeatureMatchingCLI:
         assert cmd[1] == "sequential_matcher"
 
     @patch("sphereforge.stages.stage03_sfm.feature_matching.subprocess.run")
+    def test_sequential_matcher_accepts_overlap_controls(self, mock_run, tmp_path: Path) -> None:
+        """Sequential matcher should forward overlap controls when provided."""
+        mock_run.return_value = _make_success_result()
+
+        run_feature_matching(
+            database_path=tmp_path / "db.db",
+            matcher_type="sequential",
+            sequential_overlap=1,
+            sequential_quadratic_overlap=False,
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--SequentialMatching.overlap" in cmd
+        assert "--SequentialMatching.quadratic_overlap" in cmd
+
+    @patch("sphereforge.stages.stage03_sfm.feature_matching.subprocess.run")
     def test_vocab_tree_matcher(self, mock_run, tmp_path: Path) -> None:
         """'vocab_tree' should call vocab_tree_matcher with vocab tree path."""
         mock_run.return_value = _make_success_result()
@@ -264,6 +313,26 @@ class TestFeatureMatchingCLI:
         cmd = mock_run.call_args[0][0]
         assert cmd[1] == "vocab_tree_matcher"
         assert "--VocabTreeMatching.vocab_tree_path" in cmd
+
+    @patch("sphereforge.stages.stage03_sfm.feature_matching.subprocess.run")
+    def test_vocab_tree_matcher_accepts_match_list(self, mock_run, tmp_path: Path) -> None:
+        """Vocab-tree matcher should forward the optional match list path."""
+        mock_run.return_value = _make_success_result()
+        vocab_path = tmp_path / "vocab_tree.bin"
+        vocab_path.touch()
+        match_list_path = tmp_path / "pairs.txt"
+        match_list_path.write_text("a b\n", encoding="utf-8")
+
+        run_feature_matching(
+            database_path=tmp_path / "db.db",
+            matcher_type="vocab_tree",
+            vocab_tree_path=vocab_path,
+            match_list_path=match_list_path,
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--VocabTreeMatching.match_list_path" in cmd
+        assert str(match_list_path) in cmd
 
     @patch("sphereforge.stages.stage03_sfm.feature_matching.subprocess.run")
     def test_sequential_plus_vocab_tree(self, mock_run, tmp_path: Path) -> None:
@@ -602,6 +671,92 @@ class TestDenseReconstruction:
 class TestPipelineOrchestration:
     """Tests for run_stage03 call ordering and integration."""
 
+    def test_panorama_rig_image_list_is_frame_major(self, tmp_path: Path) -> None:
+        """Panorama-rig ordering should interleave cameras at each frame index."""
+        image_dir = tmp_path / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera01").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera00" / "frame_001.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_001.png").write_bytes(b"a")
+        manifest = {
+            "cameras": [
+                {"name": "pano_camera00", "camera_id": 1, "yaw_deg": 0, "pitch_deg": 0},
+                {"name": "pano_camera01", "camera_id": 2, "yaw_deg": 90, "pitch_deg": 0},
+            ]
+        }
+
+        assert _build_stage03_image_list(image_dir, manifest) == [
+            "pano_camera00/frame_000.png",
+            "pano_camera01/frame_000.png",
+            "pano_camera00/frame_001.png",
+            "pano_camera01/frame_001.png",
+        ]
+
+    def test_pycolmap_probe_groups_database_images_by_frame(self) -> None:
+        """The pycolmap probe should group per-camera images by panorama frame stem."""
+
+        class _Image:
+            def __init__(self, image_id: int, name: str) -> None:
+                self.image_id = image_id
+                self.name = name
+
+        grouped = _group_database_images_by_frame(
+            [
+                _Image(2, "pano_camera01/frame_000.png"),
+                _Image(1, "pano_camera00/frame_000.png"),
+                _Image(4, "pano_camera01/frame_001.png"),
+                _Image(3, "pano_camera00/frame_001.png"),
+            ]
+        )
+
+        assert list(grouped) == ["frame_000", "frame_001"]
+        assert [image.name for image in grouped["frame_000"]] == [
+            "pano_camera00/frame_000.png",
+            "pano_camera01/frame_000.png",
+        ]
+
+    def test_pycolmap_probe_builds_sensor_rotations_relative_to_reference(self) -> None:
+        """The first panorama-rig camera should define the rig coordinate frame."""
+        half_turn = 0.5**0.5
+        manifest = {
+            "cameras": [
+                {"name": "pano_camera00", "camera_id": 1},
+                {"name": "pano_camera01", "camera_id": 2},
+            ]
+        }
+        stage2_images = {
+            1: {
+                "name": "images/pano_camera00/frame_000.png",
+                "camera_id": 1,
+                "qw": 1.0,
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": 0.0,
+            },
+            2: {
+                "name": "images/pano_camera01/frame_000.png",
+                "camera_id": 2,
+                "qw": half_turn,
+                "qx": 0.0,
+                "qy": half_turn,
+                "qz": 0.0,
+            },
+        }
+
+        rotations = _build_sensor_from_rig_rotations(manifest, stage2_images)
+
+        assert np.allclose(rotations[1], np.eye(3))
+        expected = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+            ]
+        )
+        assert np.allclose(rotations[2], expected, atol=1e-6)
+
     @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
     @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
     @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
@@ -804,3 +959,468 @@ class TestPipelineOrchestration:
 
         assert (output_dir / "sparse").is_dir()
         assert (output_dir / "dense").is_dir()
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_registration_diagnostics_written(
+        self,
+        mock_extract: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Pipeline should persist Stage 3 registration diagnostics artifacts."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/img_a.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+
+        config = Stage03Config(dense_reconstruction=False, min_registration_fraction=0.2)
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        image_dir.mkdir(parents=True)
+        for name in ("img_a.png", "img_b.png", "img_c.png", "img_d.png"):
+            (image_dir / name).write_bytes(b"fake")
+        output_dir = tmp_path / "output"
+
+        result = run_stage03(config, dataset_dir, output_dir)
+
+        report_path = output_dir / "registration_report.json"
+        csv_path = output_dir / "registered_vs_total.csv"
+        preview_path = output_dir / "sparse_preview.png"
+
+        assert report_path.exists()
+        assert csv_path.exists()
+        assert preview_path.exists()
+        assert result["diagnostics"]["registered_images"] == 1
+        assert result["diagnostics"]["total_input_images"] == 4
+        assert result["diagnostics"]["registration_fraction"] == pytest.approx(0.25)
+        assert result["diagnostics"]["matcher_type"] == "sequential+vocabulary_tree"
+        assert result["diagnostics"]["reconstruction_backend"] == "colmap_cli"
+        assert "img_a.png" in report_path.read_text(encoding="utf-8")
+        assert "img_b.png,0" in csv_path.read_text(encoding="utf-8")
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_registration_gate_blocks_low_coverage(
+        self,
+        mock_extract: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Low registration coverage should stop the pipeline before later stages continue."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "img_a.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+
+        config = Stage03Config(dense_reconstruction=False, min_registration_fraction=0.5)
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        image_dir.mkdir(parents=True)
+        for name in ("img_a.png", "img_b.png", "img_c.png", "img_d.png"):
+            (image_dir / name).write_bytes(b"fake")
+        output_dir = tmp_path / "output"
+
+        with pytest.raises(RuntimeError, match="registration coverage is too low"):
+            run_stage03(config, dataset_dir, output_dir)
+
+        assert (output_dir / "registration_report.json").exists()
+        mock_dense.assert_not_called()
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.build_vocab_tree")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_panorama_rig_uses_per_folder_cameras_and_match_controls(
+        self,
+        mock_extract: MagicMock,
+        mock_build_vocab_tree: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Panorama-rig datasets should enable per-folder cameras and rig-friendly ordering."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+
+        config = Stage03Config(dense_reconstruction=False, panorama_use_match_list=True)
+        mock_build_vocab_tree.return_value = tmp_path / "output" / "panorama_rig_vocab_tree.bin"
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera01").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera00" / "frame_001.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_001.png").write_bytes(b"a")
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"fov":90,"overlap":15,"cameras":[{"name":"pano_camera00","camera_id":1,"yaw_deg":0,"pitch_deg":0},{"name":"pano_camera01","camera_id":2,"yaw_deg":60,"pitch_deg":0}]}',
+            encoding="utf-8",
+        )
+        output_dir = tmp_path / "output"
+
+        run_stage03(config, dataset_dir, output_dir)
+
+        extract_kwargs = mock_extract.call_args.kwargs
+        assert extract_kwargs["single_camera_per_folder"] is True
+        assert extract_kwargs["image_list"] == [
+            "pano_camera00/frame_000.png",
+            "pano_camera01/frame_000.png",
+            "pano_camera00/frame_001.png",
+            "pano_camera01/frame_001.png",
+        ]
+        assert mock_match.call_args.kwargs["matcher_type"] == "sequential+vocabulary_tree"
+        assert mock_match.call_args.kwargs["vocab_tree_path"] == mock_build_vocab_tree.return_value
+        assert mock_match.call_args.kwargs["sequential_overlap"] == 2
+        assert mock_match.call_args.kwargs["sequential_quadratic_overlap"] is False
+        match_list_path = mock_match.call_args.kwargs["match_list_path"]
+        assert match_list_path is not None
+        match_list_text = match_list_path.read_text(encoding="utf-8")
+        assert "pano_camera00/frame_000.png pano_camera00/frame_001.png" in match_list_text
+        assert "pano_camera00/frame_000.png pano_camera01/frame_001.png" in match_list_text
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.build_vocab_tree")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_panorama_rig_can_skip_explicit_match_list(
+        self,
+        mock_extract: MagicMock,
+        mock_build_vocab_tree: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Panorama-rig datasets should be able to use only sequential matching controls."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+
+        config = Stage03Config(dense_reconstruction=False, panorama_use_match_list=False)
+        mock_build_vocab_tree.return_value = tmp_path / "output" / "panorama_rig_vocab_tree.bin"
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"fov":90,"overlap":15,"cameras":[{"name":"pano_camera00","camera_id":1,"yaw_deg":0,"pitch_deg":0}]}',
+            encoding="utf-8",
+        )
+
+        run_stage03(config, dataset_dir, tmp_path / "output")
+
+        assert mock_build_vocab_tree.call_count == 1
+        assert mock_match.call_args.kwargs["vocab_tree_path"] == mock_build_vocab_tree.return_value
+        assert mock_match.call_args.kwargs["match_list_path"] is None
+        assert mock_match.call_args.kwargs["sequential_overlap"] == 2
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.build_vocab_tree")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_panorama_rig_pycolmap_backend_requires_config_and_env_gate(
+        self,
+        mock_extract: MagicMock,
+        mock_build_vocab_tree: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The optional pycolmap path should only run when both config and env enable it."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+        mock_build_vocab_tree.return_value = tmp_path / "output" / "panorama_rig_vocab_tree.bin"
+
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"fov":90,"overlap":15,"cameras":[{"name":"pano_camera00","camera_id":1,"yaw_deg":0,"pitch_deg":0}]}',
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"SPHEREFORGE_ENABLE_PYCOLMAP_RIG": "1"}, clear=False):
+            run_stage03(
+                Stage03Config(dense_reconstruction=False, panorama_use_pycolmap_rig=False),
+                dataset_dir,
+                tmp_path / "output_cfg_off",
+            )
+        mock_ba.assert_called_once()
+        mock_pycolmap.assert_not_called()
+        mock_ba.reset_mock()
+        mock_pycolmap.reset_mock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            run_stage03(
+                Stage03Config(dense_reconstruction=False, panorama_use_pycolmap_rig=True),
+                dataset_dir,
+                tmp_path / "output_env_off",
+            )
+        mock_ba.assert_called_once()
+        mock_pycolmap.assert_not_called()
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.build_vocab_tree")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_panorama_rig_pycolmap_backend_prefers_window_three_and_skips_cli_mapper(
+        self,
+        mock_extract: MagicMock,
+        mock_build_vocab_tree: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Enabled pycolmap panorama-rig runs should prefer window 3 and avoid slow local vocab trees."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+        mock_build_vocab_tree.return_value = tmp_path / "output" / "panorama_rig_vocab_tree.bin"
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera01").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_000.png").write_bytes(b"a")
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"fov":90,"overlap":15,"cameras":[{"name":"pano_camera00","camera_id":1,"yaw_deg":0,"pitch_deg":0},{"name":"pano_camera01","camera_id":2,"yaw_deg":60,"pitch_deg":0}]}',
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"SPHEREFORGE_ENABLE_PYCOLMAP_RIG": "1"}, clear=False):
+            run_stage03(
+                Stage03Config(
+                    dense_reconstruction=False,
+                    panorama_use_pycolmap_rig=True,
+                    panorama_temporal_window=2,
+                ),
+                dataset_dir,
+                tmp_path / "output",
+            )
+
+        assert mock_match.call_args.kwargs["matcher_type"] == "sequential"
+        assert mock_match.call_args.kwargs["sequential_overlap"] == 3
+        assert mock_match.call_args.kwargs["vocab_tree_path"] is None
+        mock_build_vocab_tree.assert_not_called()
+        mock_pycolmap.assert_called_once()
+        mock_ba.assert_not_called()
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.build_vocab_tree")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_panorama_rig_pycolmap_backend_uses_external_vocab_tree_when_present(
+        self,
+        mock_extract: MagicMock,
+        mock_build_vocab_tree: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An explicit dataset vocab tree should still be honored for pycolmap panorama-rig runs."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {
+                1: {
+                    "name": "images/pano_camera00/frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                }
+            },
+            "points3D": {1: {"x": 0.0, "y": 0.0, "z": 1.0}},
+        }
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        (image_dir / "pano_camera00").mkdir(parents=True)
+        (image_dir / "pano_camera01").mkdir(parents=True)
+        (image_dir / "pano_camera00" / "frame_000.png").write_bytes(b"a")
+        (image_dir / "pano_camera01" / "frame_000.png").write_bytes(b"a")
+        (dataset_dir / "panorama_rig.json").write_text(
+            '{"fov":90,"overlap":15,"cameras":[{"name":"pano_camera00","camera_id":1,"yaw_deg":0,"pitch_deg":0},{"name":"pano_camera01","camera_id":2,"yaw_deg":60,"pitch_deg":0}]}',
+            encoding="utf-8",
+        )
+        (dataset_dir / "vocab_tree.bin").write_bytes(b"tree")
+
+        with patch.dict(os.environ, {"SPHEREFORGE_ENABLE_PYCOLMAP_RIG": "1"}, clear=False):
+            run_stage03(
+                Stage03Config(
+                    dense_reconstruction=False,
+                    panorama_use_pycolmap_rig=True,
+                    panorama_temporal_window=2,
+                ),
+                dataset_dir,
+                tmp_path / "output",
+            )
+
+        assert mock_match.call_args.kwargs["matcher_type"] == "sequential+vocabulary_tree"
+        assert mock_match.call_args.kwargs["vocab_tree_path"] == dataset_dir / "vocab_tree.bin"
+        mock_build_vocab_tree.assert_not_called()
+        mock_pycolmap.assert_called_once()
+        mock_ba.assert_not_called()
+
+    @patch("sphereforge.stages.stage03_sfm.pipeline.read_sparse_model")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_dense_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline._run_panorama_rig_pycolmap_reconstruction")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction")
+    def test_pycolmap_backend_falls_back_when_not_panorama_rig(
+        self,
+        mock_extract: MagicMock,
+        mock_match: MagicMock,
+        mock_ba: MagicMock,
+        mock_pycolmap: MagicMock,
+        mock_dense: MagicMock,
+        mock_read: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Non-panorama datasets should still use the CLI COLMAP path."""
+        mock_read.return_value = {
+            "cameras": {1: {"model": "PINHOLE"}},
+            "images": {},
+            "points3D": {},
+        }
+        dataset_dir = tmp_path / "dataset"
+        image_dir = dataset_dir / "images"
+        image_dir.mkdir(parents=True)
+        (image_dir / "img.png").write_bytes(b"a")
+
+        with patch.dict(os.environ, {"SPHEREFORGE_ENABLE_PYCOLMAP_RIG": "1"}, clear=False):
+            run_stage03(
+                Stage03Config(
+                    dense_reconstruction=False,
+                    panorama_use_pycolmap_rig=True,
+                    min_registration_fraction=0.0,
+                ),
+                dataset_dir,
+                tmp_path / "output",
+            )
+
+        mock_ba.assert_called_once()
+        mock_pycolmap.assert_not_called()
