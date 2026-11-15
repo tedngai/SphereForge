@@ -189,9 +189,9 @@ def compute_intersection_depth(
         # c = |offset_unit|^2 - 1
         a = (dirs_unit ** 2).sum(dim=-1)  # (C, N_g)
         b = 2.0 * (offset_unit * dirs_unit).sum(dim=-1)  # (C, N_g)
-        (offset_unit ** 2).sum(dim=-1) - 1.0  # (C, N_g)
+        c = (offset_unit ** 2).sum(dim=-1) - 1.0  # (C, N_g)
 
-        discriminant = b ** 2 - 4.0 * a  # (C, N_g)
+        discriminant = b ** 2 - 4.0 * a * c  # (C, N_g)
 
         # Intersection exists when discriminant >= 0
         has_intersection = discriminant >= 0.0  # (C, N_g)

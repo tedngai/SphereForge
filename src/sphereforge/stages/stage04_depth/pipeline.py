@@ -38,6 +38,7 @@ def _write_stage04_diagnostics(
     total_frames: int,
     aligned_frames: int,
     depth_paths: list[Path],
+    backend_kind: str | None = None,
 ) -> Path:
     """Persist a small Stage 4 summary with stub-backend visibility."""
     warnings: list[str] = []
@@ -49,6 +50,7 @@ def _write_stage04_diagnostics(
     diagnostics_path = output_dir / "depth_diagnostics.json"
     payload = {
         "depth_model": depth_model,
+        "backend_kind": backend_kind,
         "stub_depth_backend": stub_depth_backend,
         "total_frames": total_frames,
         "aligned_frames": aligned_frames,
@@ -60,6 +62,29 @@ def _write_stage04_diagnostics(
     return diagnostics_path
 
 
+def _estimator_kwargs(config: Stage04Config) -> dict:
+    """Translate Stage04Config into depth-estimator constructor kwargs."""
+    kwargs: dict = {
+        "device": config.depth_device,
+        "model_size": config.depth_model_size,
+        "half": config.depth_half,
+    }
+    if config.depth_model in ("dap", "panda"):
+        kwargs.update(
+            {
+                "erp_weights": config.dap_erp_weights,
+                "yaw_steps": config.dap_yaw_steps,
+                "pitches": tuple(config.dap_pitches),
+                "view_fov": config.dap_view_fov,
+                "view_res": config.dap_view_res,
+                "max_depth": config.dap_max_depth,
+            }
+        )
+    elif config.depth_model == "rpg360":
+        kwargs["rpg360_perspective_model"] = config.rpg360_perspective_model
+    return kwargs
+
+
 def _process_single_frame_stage04(
     frame_path: Path,
     frame_idx: int,
@@ -68,24 +93,31 @@ def _process_single_frame_stage04(
     cubemap_dir: Path,
     output_dir: Path,
     rpg360_anchor: np.ndarray | None,
+    depth_estimator: object | None = None,
 ) -> tuple[Path, np.ndarray, float, float, bool]:
     """Process a single frame: depth estimation + alignment + write.
 
-    Creates its own depth estimator to avoid thread-safety issues.
+    Args:
+        frame_path: Path to the ERP frame.
+        frame_idx: Index of the frame in the batch.
+        config: Stage 4 configuration.
+        sparse_model: Parsed COLMAP sparse model.
+        cubemap_dir: Stage 2 dataset directory (for panorama-rig alignment).
+        output_dir: Directory for depth maps.
+        rpg360_anchor: Optional RPG360 anchor depth (only used for frame 0).
+        depth_estimator: Optional pre-built estimator to reuse across frames.
+            When ``None`` a new estimator is created (thread-safe but slow).
 
     Returns:
-        (depth_path, aligned_depth, scale, shift)
+        ``(depth_path, aligned_depth, scale, shift, alignment_succeeded)``.
     """
     frame_name = frame_path.stem + frame_path.suffix
     logger.info("Processing frame %d: %s", frame_idx + 1, frame_name)
 
     image = read_image(frame_path)
 
-    # Create estimator locally for thread safety
-    estimator_kwargs: dict = {}
-    if config.depth_model == "rpg360":
-        estimator_kwargs["rpg360_perspective_model"] = config.rpg360_perspective_model
-    depth_estimator = get_depth_estimator(config.depth_model, **estimator_kwargs)
+    if depth_estimator is None:
+        depth_estimator = get_depth_estimator(config.depth_model, **_estimator_kwargs(config))
 
     try:
         raw_depth = depth_estimator.estimate_depth(image)
@@ -94,9 +126,21 @@ def _process_single_frame_stage04(
             f"Depth estimation failed for frame '{frame_name}': {exc}. "
             f"The selected model ('{config.depth_model}') is not fully implemented "
             f"or its weights are missing. Choose a working model in the config "
-            f"(e.g., depth_model='depth_anything_v2') and ensure dependencies "
+            f"(e.g., depth_model='dap' or 'depth_anything_v2') and ensure dependencies "
             f"are installed (pip install 'sphereforge[depth]')."
         ) from exc
+
+    raw_depth = np.asarray(raw_depth, dtype=np.float32)
+    if raw_depth.shape != image.shape[:2]:
+        raise RuntimeError(
+            f"Depth model '{config.depth_model}' returned {raw_depth.shape} for a "
+            f"{image.shape[:2]} frame; expected one depth value per ERP pixel."
+        )
+    # Monocular models can emit non-positive values; downstream code treats
+    # depth <= 0 as invalid, so clamp tiny negatives to zero.
+    raw_depth = np.where(np.isfinite(raw_depth) & (raw_depth > 0), raw_depth, 0.0).astype(
+        np.float32
+    )
 
     image_name_for_model = frame_path.name
     try:
@@ -205,9 +249,18 @@ def run_stage04(
             cubemap_dir, sparse_model, output_dir, config
         )
 
+    # Build the estimator once and reuse it across frames. Model loading (and
+    # weight download) is far more expensive than per-frame inference.
+    shared_estimator = get_depth_estimator(config.depth_model, **_estimator_kwargs(config))
+    backend_kind = getattr(shared_estimator, "backend_kind", None)
+    if not isinstance(backend_kind, str):
+        backend_kind = None
+
     # Step 2: Process each frame (serial or threaded)
     if num_workers > 1:
-        logger.info("Using %d threads for depth estimation", num_workers)
+        logger.info(
+            "Using %d threads for depth estimation (one estimator per thread)", num_workers
+        )
         args = [
             (fp, idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor)
             for idx, fp in enumerate(frame_paths)
@@ -219,10 +272,18 @@ def run_stage04(
         for idx, fp in enumerate(frame_paths):
             results.append(
                 _process_single_frame_stage04(
-                    fp, idx, config, sparse_model, cubemap_dir, output_dir, rpg360_anchor
+                    fp,
+                    idx,
+                    config,
+                    sparse_model,
+                    cubemap_dir,
+                    output_dir,
+                    rpg360_anchor,
+                    depth_estimator=shared_estimator,
                 )
             )
 
+    results = _rescale_unaligned_frames(results)
     depth_paths = [r[0] for r in results]
     first_aligned_depth = results[0][1] if results else None
     aligned_frames = sum(1 for result in results if result[4])
@@ -252,6 +313,7 @@ def run_stage04(
         total_frames=len(frame_paths),
         aligned_frames=aligned_frames,
         depth_paths=depth_paths,
+        backend_kind=backend_kind,
     )
 
     logger.info(
@@ -274,9 +336,48 @@ def run_stage04(
         "diagnostics": {
             "path": diagnostics_path,
             "stub_depth_backend": stub_depth_backend,
+            "backend_kind": backend_kind,
             "aligned_frames": aligned_frames,
         },
     }
+
+
+def _rescale_unaligned_frames(
+    results: list[tuple[Path, np.ndarray, float, float, bool]],
+) -> list[tuple[Path, np.ndarray, float, float, bool]]:
+    """Bring frames whose SfM alignment failed onto the aligned frames' scale.
+
+    A frame that fails alignment otherwise keeps its raw monocular units while
+    every other frame is in SfM units, so Stage 5 fuses surfaces at
+    inconsistent distances (duplicate shells). When at least one frame did
+    align, the failed frames are multiplied by the median scale of the aligned
+    ones and rewritten. Their ``alignment_succeeded`` flag stays ``False``.
+
+    Args:
+        results: Per-frame ``(depth_path, depth, scale, shift, aligned)``.
+
+    Returns:
+        The results with failed frames rescaled (unchanged if none aligned).
+    """
+    aligned_scales = [r[2] for r in results if r[4] and np.isfinite(r[2]) and r[2] > 0]
+    if not aligned_scales or all(r[4] for r in results):
+        return results
+    fallback = float(np.median(aligned_scales))
+    updated: list[tuple[Path, np.ndarray, float, float, bool]] = []
+    for depth_path, depth, scale, shift, ok in results:
+        if ok:
+            updated.append((depth_path, depth, scale, shift, ok))
+            continue
+        rescaled = (np.asarray(depth, dtype=np.float32) * fallback).astype(np.float32)
+        write_depth(depth_path, rescaled)
+        logger.warning(
+            "Frame %s: alignment failed; applied median scale %.4f of the %d aligned frame(s)",
+            depth_path.name,
+            fallback,
+            len(aligned_scales),
+        )
+        updated.append((depth_path, rescaled, fallback, 0.0, False))
+    return updated
 
 
 def _compute_rpg360_anchor(

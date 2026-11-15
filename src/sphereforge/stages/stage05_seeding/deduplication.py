@@ -1,7 +1,13 @@
 """Deduplication of Gaussians by distance-based clustering.
 
-Merges Gaussians that are within a threshold distance of each other using
-a greedy DBSCAN-like approach with confidence-weighted averaging.
+Merges Gaussians that are within a threshold distance of each other using a
+Union-Find (single-linkage) clustering pass with confidence-weighted averaging.
+
+Note on the default threshold: the "auto" mode uses a small fraction (10%) of
+the median nearest-neighbour spacing. A larger fraction would chain distinct
+samples together through transitive links. Cross-view duplicates are already
+merged upstream by :func:`sphereforge.stages.stage05_seeding.fusion.fuse_multiview`,
+so this pass only needs to remove near-coincident leftovers.
 """
 
 from __future__ import annotations
@@ -30,9 +36,10 @@ def deduplicate_gaussians(
         positions: (N, 3) float32 world-space Gaussian centres.
         colors: (N, 3) float32 or uint8 per-Gaussian colours.
         confidence: (N,) float32 or int confidence / view count per point.
-        dedup_distance: Merge threshold.  ``"auto"`` computes
-            ``0.01 * scene_extent`` where scene_extent is the maximum
-            axis-wise range of positions.  A float value is used directly.
+        dedup_distance: Merge threshold.  ``"auto"`` uses 10% of the median
+            nearest-neighbour spacing (scale-relative, so it behaves the same
+            for tabletop and room-scale scans).  A float value is used
+            directly.
 
     Returns:
         A tuple ``(positions, colors, confidence)`` of deduplicated arrays:
@@ -60,9 +67,21 @@ def deduplicate_gaussians(
 
     # Compute dedup distance
     if dedup_distance == "auto":
-        pos_range = np.ptp(positions, axis=0)
-        scene_extent = float(np.max(pos_range))
-        dedup_dist = 0.01 * scene_extent if scene_extent > 0 else 0.01
+        # Scale-relative: a small fraction of the typical point spacing. Using
+        # the bounding-box extent instead would make the threshold collapse for
+        # small/compact clouds and merge nothing.
+        if n > 1:
+            tree = cKDTree(positions)
+            nn_dists, _ = tree.query(positions, k=2)
+            median_spacing = float(np.median(nn_dists[:, 1]))
+        else:
+            median_spacing = 0.0
+        if median_spacing > 0:
+            dedup_dist = 0.1 * median_spacing
+        else:
+            pos_range = np.ptp(positions, axis=0)
+            scene_extent = float(np.max(pos_range))
+            dedup_dist = 0.01 * scene_extent if scene_extent > 0 else 0.01
     else:
         dedup_dist = float(dedup_distance)
 

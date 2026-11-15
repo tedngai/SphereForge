@@ -21,16 +21,17 @@ def prune_sparse_regions(
 ) -> np.ndarray:
     """Remove isolated Gaussians in sparse regions.
 
-    For each point the number of neighbours within a radius
-    ``r = 0.02 * scene_extent`` is counted.  Points with fewer than
-    ``min_neighbors`` neighbours are removed.  The ``min_neighbors``
-    value scales with *strength*: higher strength means a higher
-    minimum neighbour requirement.
+    The neighbour radius is derived from the cloud's own spacing: the median
+    k-nearest-neighbour distance (k=20).  A point is kept when it has at least
+    ``min_neighbors`` neighbours within ``(1 + strength)`` times that spacing.
+    This makes the filter scale-invariant and independent of the bounding-box
+    extent, which is dominated by a few far-away floaters.
 
     Args:
         positions: (N, 3) float32 Gaussian world-space positions.
-        strength: Pruning strength in [0, 1].  Controls the minimum
-            neighbour count.  ``min_neighbors = max(1, int(strength * 10))``.
+        strength: Pruning strength in [0, 1].  Controls both the neighbour
+            radius and the minimum neighbour count:
+            ``min_neighbors = max(1, int(strength * 10))``.
             Default 0.3 → min_neighbors = 3.
 
     Returns:
@@ -47,13 +48,25 @@ def prune_sparse_regions(
     if scene_extent < 1e-10:
         scene_extent = 1.0
 
-    radius = 0.02 * scene_extent
-
     # Min neighbours scales with strength
     min_neighbors = max(1, int(strength * 10))
 
     # Build KD-tree
     tree = cKDTree(positions)
+
+    # Neighbour radius is derived from the *typical* spacing of the point cloud
+    # (median k-NN distance) rather than from the bounding-box extent. Using the
+    # extent makes the radius collapse to a fraction of the spacing for a tight
+    # cluster, which would flag every point as "isolated".
+    k = min(20, n - 1)
+    if k < 1:
+        return np.ones(n, dtype=bool)
+    knn_dists, _ = tree.query(positions, k=k + 1)
+    median_spacing = float(np.median(knn_dists[:, 1:]))
+
+    # A point is "sparse" when it has fewer than min_neighbors neighbours within
+    # a radius of (1 + strength) times the typical spacing.
+    radius = max(median_spacing * (1.0 + strength), 1e-9)
 
     # Count neighbours within radius (includes self, so subtract 1)
     neighbor_counts = tree.query_ball_point(positions, r=radius, return_length=True)

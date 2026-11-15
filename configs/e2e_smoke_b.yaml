@@ -1,0 +1,115 @@
+# SphereForge end-to-end smoke configuration
+#
+# Tuned for the synthetic 360-degree room clip produced by
+# `scripts/make_synthetic_360_video.py`. It exercises every stage (1-8) on real
+# (non-mocked) code paths with modest compute:
+#
+#   * panorama-rig Stage 2 + rig-aware pycolmap Stage 3
+#   * real ERP depth backend (`dap`: panorama-rig fusion of Depth Anything V2)
+#   * gsplat Stage 6 training and Stage 7 hole filling
+#   * PLY + HTML export
+#
+# Stage 7 diffusion inpainting uses SD 1.5 inpainting, which is public and
+# small enough to download without authentication. FLUX.2 Klein is the
+# higher-quality default but needs a HuggingFace token. Set
+# `gsdiff_strict_backend: true` to fail instead of skipping when the backend is
+# unavailable.
+
+data_dir: data/e2e_b
+log_level: INFO
+num_workers: 1
+
+stage01:
+  input_fps: 6
+  chunk_size: 2
+  min_luminance: 5.0
+  max_luminance: 250.0
+
+stage02:
+  projection_layout: panorama_rig
+  rig_yaw_steps: 4
+  rig_pitch_angles: [-35.0, 0.0, 35.0]
+  fov: 90
+  overlap: 15
+  crop_resolution: 384
+  generate_masks: false
+
+stage03:
+  feature_type: sift
+  matcher_type: exhaustive
+  refine_intrinsics: false
+  dense_reconstruction: false
+  min_registration_fraction: 0.5
+  panorama_temporal_window: 2
+  panorama_use_pycolmap_rig: true
+
+stage04:
+  depth_model: dap
+  depth_model_size: small
+  depth_device: cuda
+  scale_alignment: median_ratio
+  sky_threshold: auto
+  depth_min: auto
+  depth_max: auto
+  dap_yaw_steps: 8
+  dap_pitches: [-90.0, -45.0, 0.0, 45.0, 90.0]
+  dap_view_fov: 90.0
+  dap_view_res: 448
+
+stage05:
+  stride: 8
+  stride_low_confidence: 16
+  grazing_angle: 75
+  outlier_pruning: 0.3
+  sparse_pruning: 0.3
+  sky_threshold: auto
+  dedup_distance: auto
+  ncc_confidence_threshold: 0.4
+  cross_validate_depth: false
+
+stage06:
+  iterations: 8000
+  densify_until_iter: 4000
+  densify_every: 300
+  prune_every: 700
+  sh_degree: 1
+  densification: igs_plus
+  erp_distortion_weights: true
+  erp_scale_flattening_loss: 0.005
+  erp_omnidirectional_neighbors: false
+  depth_reg_weight: 0.1
+  d_normal_weight: 0.02
+  use_intersection_depth: true
+  checkpoint_every: 1500
+  max_gaussians: 400000
+  opacity_reset_every: 1000
+
+stage07:
+  refine_backend: sharegs_gsdiff
+  refine_cameras: 12
+  refine_hole_threshold: 0.05
+  sharegs_enabled: true
+  sharegs_homogenization: true
+  sharegs_patch_reuse: true
+  sharegs_optimize_iters: 200
+  sharegs_patch_reuse_max_new: 2000
+  max_gaussians: 60000
+  refine_rounds: 1
+  gsdiff_distill_iters: 30
+  # SD 1.5 inpainting is public and small; FLUX.2 Klein needs HF auth.
+  gsdiff_backend: sd
+  gsdiff_strict_backend: false
+
+stage08:
+  min_opacity: 0.01
+  max_scale: auto
+  rap_final_pass: true
+  compact_box_culling: true
+  compact_box_sigma: 3.0
+  export_format: ["ply", "html"]
+  extract_mesh: false
+
+
+
+
+

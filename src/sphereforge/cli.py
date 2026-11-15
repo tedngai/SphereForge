@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
 import click
+import numpy as np
 import yaml
 
 from sphereforge.config import SphereForgeConfig
+
+logger = logging.getLogger("sphereforge.cli")
 
 # Stage pipeline imports (imported inside functions to keep CLI startup fast)
 
@@ -146,6 +150,16 @@ def process(
                 raise click.ClickException("Stage 1 produced no frames. Aborting.")
 
         elif s == 2:
+            # Starting mid-pipeline (`--stage 2`) means Stage 1 is not in this
+            # run's loop, so pick up its output from disk when resuming.
+            if frame_paths is None and resume:
+                frame_paths = _load_existing_frames(data_dir / "frames")
+                if frame_paths:
+                    logger.info(
+                        "Resuming: using %d Stage 1 frames from %s",
+                        len(frame_paths),
+                        data_dir / "frames",
+                    )
             if frame_paths is None:
                 raise click.ClickException("Stage 2 requires Stage 1 output. Run Stage 1 first.")
             cubemap_dir = data_dir / "cubemaps"
@@ -165,6 +179,8 @@ def process(
                 sparse_model = runner(cfg.stage03, cubemap_dir, colmap_output)
 
         elif s == 4:
+            if frame_paths is None and resume:
+                frame_paths = _load_existing_frames(data_dir / "frames")
             if frame_paths is None:
                 raise click.ClickException("Stage 4 requires Stage 1 output. Run Stage 1 first.")
             if sparse_model is None:
@@ -187,7 +203,19 @@ def process(
                     num_workers=cfg.num_workers,
                 )
 
+            # Monocular SfM recovers geometry only up to a global scale, while
+            # Stage 4 depth is metric. Resolve the ambiguity once here so every
+            # later stage works in metres.
+            sparse_model = _rescale_sparse_model_to_metric(
+                sparse_model,
+                depth_result.get("depth_paths", []),
+                frame_paths,
+                cubemap_dir,
+            )
+
         elif s == 5:
+            if frame_paths is None and resume:
+                frame_paths = _load_existing_frames(data_dir / "frames")
             if frame_paths is None:
                 raise click.ClickException("Stage 5 requires Stage 1 output. Run Stage 1 first.")
             if depth_result is None:
@@ -211,6 +239,7 @@ def process(
                     depth_result.get("scene_params", {}),
                     gaussians_dir,
                     num_workers=cfg.num_workers,
+                    cubemap_dir=data_dir / "cubemaps",
                 )
 
         elif s == 6:
@@ -390,11 +419,195 @@ def status(json_output: bool) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _rescale_sparse_model_to_metric(
+    sparse_model: dict[str, Any],
+    depth_paths: list[Path],
+    frame_paths: list[Path],
+    cubemap_dir: Path,
+) -> dict[str, Any]:
+    """Rescale a scale-free SfM reconstruction into metric units.
+
+    Monocular SfM cannot recover absolute scale, so the sparse model and the
+    metric depth maps produced by Stage 4 disagree by an unknown factor.
+    Without correcting it, Stage 5 projects metric depth into a
+    non-metric world frame and every downstream stage inherits the error.
+
+    Args:
+        sparse_model: Parsed COLMAP sparse model.
+        depth_paths: Stage 4 depth maps (``*_depth.npy``).
+        frame_paths: Stage 1 ERP frames, aligned with *depth_paths*.
+        cubemap_dir: Stage 2 dataset directory.
+
+    Returns:
+        The sparse model rescaled into metres, or the original model when the
+        scale cannot be estimated (a warning is logged).
+    """
+    from sphereforge.stages.stage04_depth.depth_alignment import (
+        estimate_reconstruction_scale,
+        rescale_sparse_model,
+    )
+
+    if not depth_paths or not frame_paths:
+        return sparse_model
+
+    # Rescaling is not idempotent: applying it twice would square the factor.
+    source_dir = sparse_model.get("_source_dir")
+    if source_dir is not None and (Path(source_dir) / ".metric_scale.json").exists():
+        logger.info("Sparse model already in metric units; skipping rescale")
+        return sparse_model
+
+    depth_maps = []
+    names = []
+    for depth_path, frame_path in zip(depth_paths, frame_paths, strict=False):
+        try:
+            depth_maps.append(np.load(str(depth_path)))
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not read depth map %s: %s", depth_path, exc)
+            continue
+        names.append(Path(frame_path).name)
+
+    if not depth_maps:
+        return sparse_model
+
+    scale = estimate_reconstruction_scale(depth_maps, names, sparse_model, cubemap_dir)
+    if scale is None:
+        logger.warning(
+            "Could not estimate the SfM-to-metric scale; downstream stages will "
+            "work in arbitrary units and depth/geometry may disagree."
+        )
+        return sparse_model
+
+    rescaled = rescale_sparse_model(sparse_model, scale)
+    # Persist the rescaled model. Keeping it only in memory means any later
+    # stage that re-reads the sparse model from disk (a standalone --stage 5
+    # run, or a --resume after Stage 4) silently works in the old, scale-free
+    # units, so geometry and depth disagree by the scale factor.
+    _persist_rescaled_sparse_model(rescaled, scale)
+    return rescaled
+
+
+def _persist_rescaled_sparse_model(sparse_model: dict[str, Any], scale: float) -> None:
+    """Persist the metric rescale so a later re-read sees the same geometry.
+
+    ``rescale_sparse_model`` already scaled the points and the image
+    translations in memory. Only the *persisted* point cloud needs updating:
+    the rig sidecar is applied on top of the model's image translations by
+    :func:`apply_rigidity_to_model`, so scaling it here as well would apply the
+    factor twice and leave the cameras ~15x too close to the origin.
+
+    pycolmap cannot hold a panorama rig (``Image.cam_from_world`` is read-only
+    and ``Frame.set_cam_from_world`` keeps only the last sensor written), so the
+    corrected poses stay in the sidecar and the point cloud is rewritten
+    directly.
+
+    Args:
+        sparse_model: The already-rescaled model (used for its source directory).
+        scale: Factor that was applied to the model.
+    """
+    sparse_dir = sparse_model.get("_source_dir")
+    if sparse_dir is None:
+        return
+    sparse_dir = Path(sparse_dir)
+    marker = sparse_dir / ".metric_scale.json"
+    if marker.exists():
+        logger.debug("Sparse model already rescaled; skipping rewrite")
+        return
+    try:
+        _rescale_sparse_points(sparse_dir, scale)
+        # Written last: its presence is what makes the rescale idempotent.
+        marker.write_text(json.dumps({"scale": scale}), encoding="utf-8")
+        logger.info("Recorded metric rescale (%.4f) for %s", scale, sparse_dir)
+    except (OSError, ValueError, ImportError) as exc:
+        logger.warning("Could not record the metric rescale: %s", exc)
+
+
+def _rescale_sparse_points(sparse_dir: Path, scale: float) -> None:
+    """Scale the 3D points *and* the camera poses in the COLMAP model.
+
+    Points and cameras must share one scale. Scaling only the points leaves the
+    cameras at the old scale, which makes ``camera_to_point_radius`` explode
+    (measured: 1.99 -> 4.87 after a 0.136 rescale) and pushes the camera path
+    outside the geometry. That ratio is scale-invariant, so the corruption is
+    invisible until downstream stages place Gaussians badly.
+
+    The whole model is rewritten through pycolmap's *binary* writer. The text
+    writer is not an option here: ``write_text`` on a panorama-rig model drops
+    observations (measured 60,740 -> 49,710) because the text format cannot
+    faithfully represent the rig. Scaling ``rig_from_world`` scales every sensor
+    of a frame at once, which is exactly right for a shared optical centre.
+
+    Args:
+        sparse_dir: Directory holding the COLMAP sparse model.
+        scale: Factor to apply to every 3D position.
+    """
+    import pycolmap
+
+    reconstruction = pycolmap.Reconstruction(str(sparse_dir))
+    for point in reconstruction.points3D.values():
+        point.xyz = np.asarray(point.xyz, dtype=np.float64) * scale
+
+    # The mapper does not always model the rig sensors as sharing one optical
+    # centre: ``sensor_from_rig`` can carry a non-zero translation (measured up
+    # to ~1.3 units). Those offsets are world-space distances too, so they must
+    # be scaled alongside the rig pose or the cameras end up in a different
+    # scale from the points.
+    for rig in reconstruction.rigs.values():
+        ref_id = rig.ref_sensor_id.id
+        for sensor in rig.sensor_ids():
+            if sensor.id == ref_id:
+                continue
+            transform = rig.sensor_from_rig(sensor)
+            scaled = pycolmap.Rigid3d()
+            scaled.rotation.quat = np.asarray(transform.rotation.quat)
+            scaled.translation = np.asarray(transform.translation, dtype=np.float64) * scale
+            rig.set_sensor_from_rig(sensor, scaled)
+
+    for frame in reconstruction.frames.values():
+        pose = frame.rig_from_world
+        if callable(pose):
+            pose = pose()
+        scaled = pycolmap.Rigid3d()
+        scaled.rotation.quat = np.asarray(pose.rotation.quat)
+        scaled.translation = np.asarray(pose.translation, dtype=np.float64) * scale
+        frame.rig_from_world = scaled
+
+    # Models without a rig still need their per-image poses scaled.
+    if not reconstruction.frames:
+        for image in reconstruction.images.values():
+            pose = image.cam_from_world
+            if callable(pose):
+                pose = pose()
+            scaled = pycolmap.Rigid3d()
+            scaled.rotation.quat = np.asarray(pose.rotation.quat)
+            scaled.translation = np.asarray(pose.translation, dtype=np.float64) * scale
+            reconstruction.frame(image.frame_id).set_cam_from_world(
+                image.camera_id, scaled
+            )
+
+    reconstruction.write(str(sparse_dir))
+    logger.info(
+        "Rescaled %d sparse points and %d camera poses by %.4f",
+        len(reconstruction.points3D),
+        len(reconstruction.images),
+        scale,
+    )
+
+
 def _has_frames(frames_dir: Path) -> bool:
     """Check whether *frames_dir* contains image files."""
     if not frames_dir.is_dir():
         return False
     return any(frames_dir.glob("*.png")) or any(frames_dir.glob("*.jpg"))
+
+
+def _load_existing_frames(frames_dir: Path) -> list[Path]:
+    """Return the Stage 1 frame paths already present on disk (sorted)."""
+    if not frames_dir.is_dir():
+        return []
+    frames = sorted(frames_dir.glob("*.png"))
+    if not frames:
+        frames = sorted(frames_dir.glob("*.jpg"))
+    return frames
 
 
 def _has_depth_maps(depth_dir: Path) -> bool:
@@ -406,3 +619,4 @@ def _has_depth_maps(depth_dir: Path) -> bool:
 
 if __name__ == "__main__":
     main()
+

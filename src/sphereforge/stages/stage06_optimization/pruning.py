@@ -255,12 +255,15 @@ def rap_prune(
     max_scale_per_gaussian = scales.max(dim=1).values  # (N,)
 
     if scene_extent is None:
-        # Compute scene extent as max distance from centroid
+        # Use a robust extent (95th percentile), not the maximum. The max is
+        # set by the single most distant Gaussian, so a stray floater inflates
+        # the extent, which in turn lets even larger floaters pass the scale
+        # test — a feedback loop that grows the scene without bound.
         centroid = positions.mean(dim=0)  # (3,)
         dists = (positions - centroid).norm(dim=1)  # (N,)
-        scene_extent = dists.max().clamp(min=1e-6).item()
+        scene_extent = torch.quantile(dists, 0.95).clamp(min=1e-6).item()
         logger.debug(
-            "rap_prune: auto-computed scene_extent=%.4f", scene_extent
+            "rap_prune: auto-computed scene_extent=%.4f (p95)", scene_extent
         )
 
     scale_ok = max_scale_per_gaussian <= (scene_extent * max_scale_ratio)  # (N,)

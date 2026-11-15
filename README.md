@@ -96,8 +96,38 @@ pip install 'sphereforge[all]'
 ### External Dependencies
 
 - **COLMAP**: Required for Stage 3 (SfM). Install from [colmap.github.io](https://colmap.github.io/)
+  - If no `colmap` binary is on `PATH`, Stage 3 falls back to the bundled
+    `pycolmap` bindings automatically.
 - **FFmpeg**: Required for Stage 1 (video ingestion). Usually pre-installed or `apt install ffmpeg`
 - **CUDA GPU**: Required for training (Stage 6) and depth estimation (Stage 4)
+
+### Building the gsplat rasterizer (Windows)
+
+gsplat ships no prebuilt Windows binaries — its CUDA kernels are JIT-compiled on
+first use, which needs `nvcc`, MSVC and `ninja`. Two helper scripts handle this
+without requiring an elevated CUDA installer:
+
+```bat
+:: 1. Assemble a local CUDA toolkit from conda packages (no admin rights)
+python scripts\fetch_cuda_toolkit.py
+
+:: 2. Build the gsplat CUDA extension (needs Visual Studio Build Tools)
+scripts\build_gsplat_cuda.bat
+```
+
+Requires **Visual Studio 2019/2022 Build Tools** with the C++ workload, plus
+`pip install ninja`. The build is cached in `.torch-ext/`, so later runs start
+in seconds.
+
+To run any command with the build environment configured (so the rasterizer is
+available to Stage 6):
+
+```bat
+scripts\sphereforge_env.bat python -m sphereforge.cli process video.mp4 --config configs/e2e_smoke.yaml
+```
+
+Without this, Stage 6 raises a clear error rather than silently training against
+a stub renderer.
 
 ## Quick Start
 

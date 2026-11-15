@@ -259,10 +259,22 @@ def _sync_gaussians_numpy(
     scales_raw: "torch.Tensor",
     rotations: "torch.Tensor",
 ) -> None:
-    """Sync updated torch tensors back to the gaussians dict as numpy arrays."""
+    """Sync updated torch tensors back to the gaussians dict as numpy arrays.
+
+    The dict follows the on-disk PLY convention, which stores *activated*
+    opacities and scales (Stage 6 writes ``sigmoid``/``exp``). Writing the raw
+    logits here pushes values outside [0, 1] into the pipeline, and Stage 8's
+    final prune then discards every Gaussian (observed: 294,586 -> 0).
+    """
+    import torch
+
     gaussians["positions"] = positions.detach().cpu().numpy().astype(np.float32)
-    gaussians["opacities"] = opacities_raw.detach().cpu().numpy().astype(np.float32)
-    gaussians["scales"] = scales_raw.detach().cpu().numpy().astype(np.float32)
+    gaussians["opacities"] = (
+        torch.sigmoid(opacities_raw).detach().cpu().numpy().astype(np.float32)
+    )
+    gaussians["scales"] = (
+        torch.exp(scales_raw).detach().cpu().numpy().astype(np.float32)
+    )
     gaussians["rotations"] = rotations.detach().cpu().numpy().astype(np.float32)
 
     colors_np = colors.detach().cpu().numpy()

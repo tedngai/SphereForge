@@ -16,6 +16,9 @@ from plyfile import PlyData, PlyElement
 
 logger = logging.getLogger(__name__)
 
+# Non-DC SH coefficient counts (3 channels x ((degree + 1) ** 2 - 1)) for degree 1-3.
+_SH_REST_WIDTHS = (9, 24, 45)
+
 
 # ---------------------------------------------------------------------------
 # Image I/O
@@ -303,9 +306,11 @@ def write_ply(
         opacities: N float32 array of opacity values.
         scales: Nx3 float32 array of per-axis scale values.
         rotations: Nx4 float32 array of quaternion rotations (rot_0..3).
-        sh_coeffs: Optional Nx45 float32 array of remaining SH coefficients
-            (f_rest_0 through f_rest_44) for degree 3. When None, only DC
-            SH components are written.
+        sh_coeffs: Optional float32 array of the remaining (non-DC) SH
+            coefficients in the standard 3DGS channel-major ``f_rest_*`` order:
+            Nx9 (degree 1), Nx24 (degree 2) or Nx45 (degree 3). Use
+            :func:`sh_rest_from_coeffs` to convert an ``(N, K, 3)`` gsplat
+            tensor. When None, only DC SH components are written.
 
     Raises:
         ValueError: If input arrays have inconsistent lengths or invalid shapes.
@@ -326,10 +331,14 @@ def write_ply(
         raise ValueError(f"scales must be Nx3, got {scales.shape}")
     if rotations.shape != (n, 4):
         raise ValueError(f"rotations must be Nx4, got {rotations.shape}")
-    if sh_coeffs is not None and sh_coeffs.shape != (n, 45):
+    if sh_coeffs is not None and (
+        sh_coeffs.ndim != 2 or sh_coeffs.shape[0] != n or sh_coeffs.shape[1] not in _SH_REST_WIDTHS
+    ):
         raise ValueError(
-            f"sh_coeffs must be Nx45 for degree-3 SH, got {sh_coeffs.shape}"
+            "sh_coeffs must be Nx9, Nx24 or Nx45 (SH degree 1-3, DC excluded), "
+            f"got {sh_coeffs.shape}"
         )
+    n_rest = 0 if sh_coeffs is None else int(sh_coeffs.shape[1])
 
     # Cast types
     positions = positions.astype(np.float32)
@@ -348,9 +357,8 @@ def write_ply(
         ("scale_0", "f4"), ("scale_1", "f4"), ("scale_2", "f4"),
         ("rot_0", "f4"), ("rot_1", "f4"), ("rot_2", "f4"), ("rot_3", "f4"),
     ]
-    if sh_coeffs is not None:
-        for i in range(45):
-            dtype_list.append((f"f_rest_{i}", "f4"))
+    for i in range(n_rest):
+        dtype_list.append((f"f_rest_{i}", "f4"))
 
     # Create structured array
     vertex_data = np.empty(n, dtype=dtype_list)
@@ -368,9 +376,8 @@ def write_ply(
     vertex_data["rot_1"] = rotations[:, 1]
     vertex_data["rot_2"] = rotations[:, 2]
     vertex_data["rot_3"] = rotations[:, 3]
-    if sh_coeffs is not None:
-        for i in range(45):
-            vertex_data[f"f_rest_{i}"] = sh_coeffs[:, i]
+    for i in range(n_rest):
+        vertex_data[f"f_rest_{i}"] = sh_coeffs[:, i]
 
     vertex_element = PlyElement.describe(vertex_data, "vertex")
     ply = PlyData([vertex_element], text=False, byte_order="<")
@@ -380,8 +387,61 @@ def write_ply(
         "Wrote PLY %s: %d gaussians, sh_coeffs=%s",
         path,
         n,
-        "Nx45" if sh_coeffs is not None else "None",
+        f"Nx{n_rest}" if n_rest else "None",
     )
+
+
+def sh_rest_from_coeffs(sh: np.ndarray) -> np.ndarray | None:
+    """Flatten gsplat-layout SH coefficients into 3DGS ``f_rest_*`` order.
+
+    gsplat stores colours as ``(N, K, 3)`` (coefficient-major). The 3DGS PLY
+    convention stores the non-DC bands channel-major: all R coefficients, then
+    all G, then all B.
+
+    Args:
+        sh: SH coefficients ``(N, K, 3)`` with ``K = (degree + 1) ** 2``.
+
+    Returns:
+        ``(N, 3 * (K - 1))`` float32 array, or ``None`` when ``K == 1``.
+
+    Raises:
+        ValueError: If *sh* is not ``(N, K, 3)``.
+    """
+    sh = np.asarray(sh)
+    if sh.ndim != 3 or sh.shape[2] != 3:
+        raise ValueError(f"Expected SH coefficients shaped (N, K, 3), got {sh.shape}")
+    if sh.shape[1] <= 1:
+        return None
+    rest = sh[:, 1:, :]  # (N, K-1, 3)
+    return np.ascontiguousarray(rest.transpose(0, 2, 1)).reshape(sh.shape[0], -1).astype(
+        np.float32
+    )
+
+
+def sh_coeffs_to_gsplat(sh_coeffs: np.ndarray) -> np.ndarray:
+    """Inverse of :func:`sh_rest_from_coeffs` for ``read_ply``'s ``sh_coeffs``.
+
+    Args:
+        sh_coeffs: ``(N, 3 + 3 * (K - 1))`` array from :func:`read_ply`
+            (DC first, then ``f_rest_*`` in channel-major order).
+
+    Returns:
+        ``(N, K, 3)`` float32 array in gsplat layout.
+
+    Raises:
+        ValueError: If the width does not correspond to SH degree 0-3.
+    """
+    sh_coeffs = np.asarray(sh_coeffs, dtype=np.float32)
+    n, width = sh_coeffs.shape
+    n_rest = width - 3
+    if n_rest not in (0, *_SH_REST_WIDTHS):
+        raise ValueError(f"sh_coeffs width {width} is not 3 + 9/24/45")
+    k = 1 + n_rest // 3
+    out = np.empty((n, k, 3), dtype=np.float32)
+    out[:, 0, :] = sh_coeffs[:, :3]
+    if n_rest:
+        out[:, 1:, :] = sh_coeffs[:, 3:].reshape(n, 3, k - 1).transpose(0, 2, 1)
+    return out
 
 
 # ---------------------------------------------------------------------------

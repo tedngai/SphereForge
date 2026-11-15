@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 
-from sphereforge.common.io import read_ply, write_ply
+from sphereforge.common.io import read_ply, sh_rest_from_coeffs, write_ply
 
 if TYPE_CHECKING:
     from sphereforge.config import Stage06Config
@@ -31,9 +32,16 @@ def _activated_scale_to_log(scale: np.ndarray) -> np.ndarray:
 
 def _prepare_initial_gaussians_for_training(gaussians_ply: dict) -> dict[str, torch.Tensor]:
     """Normalize Stage 5 PLY parameters into Stage 6 raw optimization space."""
+    colors = torch.from_numpy(gaussians_ply["colors"]).float()
+    # Stage 5 stores 0-255 colours, but gsplat treats the colour channel as
+    # SH DC coefficients in 0-1 space. Without this normalisation every
+    # Gaussian renders ~255x too bright and the image saturates to white.
+    if colors.numel() and float(colors.max()) > 1.5:
+        colors = colors / 255.0
+
     return {
         "positions": torch.from_numpy(gaussians_ply["positions"]).float(),
-        "colors": torch.from_numpy(gaussians_ply["colors"]).float(),
+        "colors": colors,
         "opacities": torch.from_numpy(
             _activated_opacity_to_logit(gaussians_ply["opacities"])
         ).float(),
@@ -44,14 +52,163 @@ def _prepare_initial_gaussians_for_training(gaussians_ply: dict) -> dict[str, to
     }
 
 
+def _render_erp_depth_to_view(
+    erp_depth: np.ndarray,
+    yaw_deg: float,
+    pitch_deg: float,
+    fov_deg: float,
+    view_size: int,
+) -> np.ndarray:
+    """Render an ERP depth map into a rectilinear virtual view.
+
+    Stage 4 produces one depth map per ERP frame, but Stage 6 trains on the
+    rectilinear panorama-rig views written by Stage 2. This resamples the ERP
+    depth into a view using exactly the same geometry as
+    :func:`sphereforge.stages.stage02_cubemap.cubemap.extract_perspective_view`,
+    so the rendered depth lines up pixel-for-pixel with the training image.
+
+    ERP depth is stored as *radial* distance (``depth * ray_direction``), so
+    the resampled value is converted to the view's *perspective* depth
+    (distance along the view axis) by dividing by the ray norm.
+
+    Args:
+        erp_depth: ERP depth map ``(H, W)``, radial distance.
+        yaw_deg: View yaw in degrees (Stage 2 convention).
+        pitch_deg: View pitch in degrees.
+        fov_deg: View field of view in degrees.
+        view_size: Output view side length in pixels.
+
+    Returns:
+        Perspective depth map ``(view_size, view_size)`` float32.
+    """
+    import cv2
+
+    from sphereforge.stages.stage02_cubemap.cubemap import (
+        _direction_to_erp_uv,
+        _make_rotation_matrix,
+    )
+
+    erp_h, erp_w = erp_depth.shape[:2]
+    focal = view_size / (2.0 * math.tan(math.radians(fov_deg) / 2.0))
+    center = view_size / 2.0
+
+    u_coords = np.arange(view_size, dtype=np.float64)
+    v_coords = np.arange(view_size, dtype=np.float64)
+    uu, vv = np.meshgrid(u_coords, v_coords)
+    dx = (uu - center) / focal
+    dy = (vv - center) / focal
+    dz = np.ones_like(dx)
+    ray_norm = np.sqrt(dx * dx + dy * dy + dz * dz)
+    dirs_cam = np.stack([dx / ray_norm, dy / ray_norm, dz / ray_norm], axis=-1)
+
+    rotation = _make_rotation_matrix(yaw_deg, pitch_deg)
+    dirs_world = np.einsum("ij,...j->...i", rotation.T, dirs_cam)
+    erp_u, erp_v = _direction_to_erp_uv(dirs_world, erp_w, erp_h)
+
+    # ERP is periodic in longitude but cv2.remap's BORDER_WRAP replicates the
+    # edge pixel instead of wrapping, so normalise u into [0, W) by hand.
+    # Without this, the seam column (u == W) samples the wrong pixel and the
+    # whole view can collapse to zeros.
+    erp_u = np.mod(erp_u, erp_w)
+    erp_v = np.clip(erp_v, 0.0, erp_h - 1.0)
+
+    radial = cv2.remap(
+        erp_depth.astype(np.float32),
+        erp_u.astype(np.float32),
+        erp_v.astype(np.float32),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return (radial / ray_norm).astype(np.float32)
+
+
+def _render_rig_view_depth(
+    name: str,
+    depth_dir: Path,
+    cubemap_dir: Path,
+    cam: dict,
+) -> np.ndarray | None:
+    """Render the ERP depth of a panorama-rig view into that view's frame.
+
+    Args:
+        name: COLMAP image name, e.g. ``images/pano_camera03/frame_000014.png``.
+        depth_dir: Stage 4 output directory containing ``<frame>_depth.npy``.
+        cubemap_dir: Stage 2 dataset directory containing ``panorama_rig.json``.
+        cam: Parsed COLMAP camera entry for this view (for width/height).
+
+    Returns:
+        Perspective depth map ``(height, width)`` float32, or ``None`` when the
+        dataset is not a panorama rig or the ERP depth for the frame is missing.
+    """
+    import json
+
+    manifest_path = Path(cubemap_dir) / "panorama_rig.json"
+    if not manifest_path.exists():
+        return None
+
+    parts = Path(name.replace("\\", "/")).parts
+    # The COLMAP image name may or may not carry the "images/" prefix, so take
+    # the last two components rather than requiring a fixed depth.
+    if len(parts) < 2:
+        return None
+    camera_name, frame_file = parts[-2], parts[-1]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not read panorama-rig manifest %s: %s", manifest_path, exc)
+        return None
+
+    camera = next(
+        (c for c in manifest.get("cameras", []) if str(c.get("name")) == camera_name),
+        None,
+    )
+    if camera is None:
+        return None
+
+    erp_depth_path = Path(depth_dir) / f"{Path(frame_file).stem}_depth.npy"
+    if not erp_depth_path.exists():
+        return None
+
+    erp_depth = np.load(str(erp_depth_path)).astype(np.float32)
+    fov_deg = float(manifest.get("fov", 90)) + float(manifest.get("overlap", 15))
+    return _render_erp_depth_to_view(
+        erp_depth,
+        yaw_deg=float(camera["yaw_deg"]),
+        pitch_deg=float(camera["pitch_deg"]),
+        fov_deg=fov_deg,
+        view_size=int(cam["width"]),
+    )
+
+
 def _camera_to_intrinsics_matrix(cam: dict) -> torch.Tensor:
-    """Build a 3x3 intrinsics matrix from a parsed COLMAP camera entry."""
+    """Build a 3x3 intrinsics matrix from a parsed COLMAP camera entry.
+
+    Supports the pinhole family, including models with distortion parameters.
+    Stage 6 renders with a pure pinhole rasteriser, so the distortion
+    coefficients are ignored; for the small distortions typical of a
+    panorama-rig view this is an acceptable approximation.
+
+    Args:
+        cam: Parsed COLMAP camera entry with ``model`` and ``params``.
+
+    Returns:
+        3x3 intrinsics tensor.
+
+    Raises:
+        ValueError: If the camera model is not a supported pinhole variant.
+    """
     model = cam["model"]
     params = cam["params"]
 
     if model == "PINHOLE":
         fx, fy, cx, cy = params[:4]
     elif model == "SIMPLE_PINHOLE":
+        fx, cx, cy = params[:3]
+        fy = fx
+    elif model in ("SIMPLE_RADIAL", "RADIAL", "OPENCV", "SIMPLE_RADIAL_FISHEYE",
+                   "RADIAL_FISHEYE", "OPENCV_FISHEYE", "FULL_OPENCV", "FOV"):
+        # The first four parameters of every radial/OpenCV model are f, cx, cy.
         fx, cx, cy = params[:3]
         fy = fx
     else:
@@ -199,8 +356,23 @@ def run_stage06(
             target_depth = np.load(str(depth_path)).astype(np.float32)
             target_depth = torch.from_numpy(target_depth)
         else:
-            logger.warning("Depth for %s not found in any expected location, using placeholder", name)
-            target_depth = torch.rand(cam["height"], cam["width"]) * 10.0
+            # Panorama-rig views live at images/pano_cameraNN/<frame>.png, so the
+            # per-face patterns above never match. Stage 4 stores one ERP depth
+            # map per frame; render it into this virtual view instead of
+            # falling back to random placeholder depth.
+            rig_depth = _render_rig_view_depth(
+                name=name,
+                depth_dir=depth_dir,
+                cubemap_dir=colmap_dir.parent.parent / "cubemaps",
+                cam=cam,
+            )
+            if rig_depth is not None:
+                target_depth = torch.from_numpy(rig_depth)
+            else:
+                logger.warning(
+                    "Depth for %s not found in any expected location, using placeholder", name
+                )
+                target_depth = torch.rand(cam["height"], cam["width"]) * 10.0
 
         # Compute FOV from camera intrinsics
         params = cam["params"]
@@ -208,8 +380,15 @@ def run_stage06(
         fov = 2 * np.degrees(np.arctan(cam["width"] / (2 * fx)))
         K = _camera_to_intrinsics_matrix(cam)
 
-        # Compute latitudes (ERP pixel → latitude mapping)
-        latitudes = _compute_view_latitudes(cam["height"], cam["width"])
+        # ErpGS cos(latitude) weighting corrects the pole oversampling of an
+        # *equirectangular* image. Pinhole rig views have no such distortion;
+        # mapping their rows onto -90..+90 degrees would zero the loss weight
+        # of the top and bottom rows of every training image.
+        latitudes = (
+            _compute_view_latitudes(cam["height"], cam["width"])
+            if _is_equirectangular_camera(cam)
+            else None
+        )
 
         training_views.append({
             "viewmat": torch.from_numpy(viewmat.astype(np.float32)),
@@ -236,34 +415,58 @@ def run_stage06(
         checkpoint_dir=checkpoint_dir,
     )
 
-    # Write optimized PLY — f_dc in SH coefficient space, opacity/scale in log space
+    # Write optimized PLY. The 3DGS PLY convention (and every external viewer)
+    # stores *activated* opacity and scale, so undo the raw parameterisation
+    # that the optimiser works in; f_dc stays in SH coefficient space.
     output_ply = output_dir / "optimized.ply"
-    colors_np = final_gaussians["colors"].cpu()
-    if colors_np.ndim == 3:
-        colors_np = colors_np[:, 0, :]  # (N, K, 3) → (N, 3)
-    colors_np = colors_np.numpy()
-    SH_C0 = 0.28209479177387814
-    if colors_np.max() > 1.5:
-        colors_np = (colors_np / 255.0 - 0.5) / SH_C0
-    colors_np = colors_np.astype(np.float32)
+    # ``train_gaussians`` keeps colours in SH coefficient space (gsplat's
+    # convention), which is exactly what the PLY stores, so write them as-is.
+    # Converting again here would divide by SH_C0 twice and flatten the scene.
+    sh = final_gaussians["colors"].detach().cpu().numpy().astype(np.float32)
+    if sh.ndim == 2:
+        sh = sh[:, None, :]  # (N, 3) -> (N, 1, 3)
+    colors_np = sh[:, 0, :]
+    # Higher SH bands carry the trained view-dependent colour. Dropping them
+    # leaves a DC term that was co-trained with them, so colours shift.
+    sh_rest = sh_rest_from_coeffs(sh)
+
+    raw_opacities = final_gaussians["opacities"].cpu().numpy()
+    raw_scales = final_gaussians["scales"].cpu().numpy()
     write_ply(
         output_ply,
         positions=final_gaussians["positions"].cpu().numpy(),
         colors=colors_np,
-        opacities=final_gaussians["opacities"].cpu().numpy(),
-        scales=final_gaussians["scales"].cpu().numpy(),
+        opacities=(1.0 / (1.0 + np.exp(-raw_opacities))).astype(np.float32),
+        scales=np.exp(raw_scales).astype(np.float32),
         rotations=final_gaussians["rotations"].cpu().numpy(),
+        sh_coeffs=sh_rest,
     )
 
     logger.info("Stage 6 complete: %s (%d Gaussians)", output_ply, final_gaussians["positions"].shape[0])
     return output_ply
 
 
-def _compute_view_latitudes(height: int, width: int) -> torch.Tensor:
-    """Compute latitude map for a training view.
+_ERP_CAMERA_MODELS = {"EQUIRECTANGULAR", "SPHERE", "SPHERICAL"}
 
-    For cubemap crops, approximate latitude based on vertical position.
-    For ERP images, exact latitude from pixel row.
+
+def _is_equirectangular_camera(cam: dict) -> bool:
+    """Return True when the COLMAP camera model is equirectangular.
+
+    Args:
+        cam: Parsed COLMAP camera dict.
+
+    Returns:
+        True only for equirectangular cameras; pinhole rig views return False.
+    """
+    model = str(cam.get("model", "")).upper()
+    return model in _ERP_CAMERA_MODELS
+
+
+def _compute_view_latitudes(height: int, width: int) -> torch.Tensor:
+    """Compute the per-pixel latitude map of an equirectangular training view.
+
+    Only meaningful for ERP images, where pixel row maps linearly to latitude.
+    Do not use it for pinhole views (see :func:`_is_equirectangular_camera`).
 
     Args:
         height: Image height.

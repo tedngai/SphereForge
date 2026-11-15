@@ -150,12 +150,85 @@ def _direction_to_erp_uv(
     return u, v
 
 
+def _robust_relative_spread(values: np.ndarray) -> float:
+    """Median absolute deviation of *values* relative to their median."""
+    med = float(np.median(values))
+    return float(np.median(np.abs(values - med)) / max(abs(med), 1e-9))
+
+
+def _ratio_trend(ratios: np.ndarray, mono_depth: np.ndarray) -> float:
+    """Spearman correlation between monocular depth and the sparse/mono ratio.
+
+    When the sparse points and the monocular depth describe the *same* scene,
+    the ratio ``sparse_depth / mono_depth`` is the (constant) scale factor and
+    is uncorrelated with depth. When the correspondence is wrong — e.g. sparse
+    points reproject onto unrelated pixels — the ratio drifts systematically
+    with depth, giving a large correlation.
+
+    The correlation is only meaningful when the ratios actually vary: a fit
+    with a tight, constant ratio is by definition consistent, so the trend is
+    reported as 0 in that case.
+
+    Returns:
+        Absolute Spearman rank correlation in ``[0, 1]``.
+    """
+    if ratios.size < 8:
+        return 0.0
+    med = float(np.median(ratios))
+    spread = float(np.median(np.abs(ratios - med)) / max(abs(med), 1e-9))
+    if spread < 0.05:
+        return 0.0
+    from scipy.stats import spearmanr
+
+    rho, _ = spearmanr(mono_depth, ratios)
+    if not np.isfinite(rho):
+        return 0.0
+    return float(abs(rho))
+
+
 def _align_erp_depth_to_panorama_sparse_points(
     depth_map: np.ndarray,
     sparse_points_3d: np.ndarray,
     panorama_pose: np.ndarray,
+    *,
+    min_inlier_ratio: float = 0.6,
+    max_relative_spread: float = 0.35,
+    max_ratio_trend: float = 0.5,
 ) -> tuple[np.ndarray, float, float]:
-    """Align ERP radial depth using sparse points projected into panorama space."""
+    """Align ERP radial depth using sparse points projected into panorama space.
+
+    The scale is estimated as the median ratio of sparse-point depth to
+    monocular depth, then refined on the largest consistent subset (ratios
+    within a few median-absolute-deviations of the median).
+
+    Three consistency checks guard the fit, because silently applying a bad
+    scale corrupts every downstream stage:
+
+    1. ``inlier_ratio`` — enough correspondences must agree with the fitted
+       scale.
+    2. ``spread`` — the agreeing correspondences must be tight.
+    3. ``ratio_trend`` — the ratio must not drift systematically with depth.
+       A wrong correspondence mapping (e.g. sparse points reprojecting onto
+       unrelated pixels) produces exactly such a drift, and is otherwise
+       invisible to median-based checks.
+
+    Args:
+        depth_map: ERP radial depth ``(H, W)``.
+        sparse_points_3d: Sparse 3D points ``(N, 3)`` in the COLMAP world frame.
+        panorama_pose: 4x4 world-to-panorama transform.
+        min_inlier_ratio: Minimum fraction of sampled points that must agree
+            with the fitted scale.
+        max_relative_spread: Maximum robust relative spread (MAD / median) of
+            the inlier ratios.
+        max_ratio_trend: Maximum allowed |Spearman rho| between depth and ratio.
+
+    Returns:
+        ``(aligned_depth, scale, shift)``.
+
+    Raises:
+        ValueError: If no points project into the depth map or the fit is
+            inconsistent with the sparse geometry.
+    """
     h, w = depth_map.shape
     ones = np.ones((sparse_points_3d.shape[0], 1), dtype=np.float64)
     points_hom = np.hstack([sparse_points_3d.astype(np.float64), ones])
@@ -180,19 +253,177 @@ def _align_erp_depth_to_panorama_sparse_points(
     mono_valid = mono_depth_vals[valid_mono]
     metric_valid = metric_depth_vals[valid_mono]
     ratios = metric_valid / mono_valid
+
+    # Robust fit: median, then keep the consistent subset and refit.
     scale = float(np.median(ratios))
-    residuals = metric_valid - scale * mono_valid
-    shift = float(np.median(residuals))
+    mad = float(np.median(np.abs(ratios - scale)))
+    tolerance = max(3.0 * 1.4826 * mad, 1e-6 * max(scale, 1e-9))
+    inliers = np.abs(ratios - scale) <= tolerance
+    inlier_ratio = float(np.mean(inliers))
+    if np.any(inliers):
+        scale = float(np.median(ratios[inliers]))
+
+    # Consistency is judged on the *inlier* spread: a scene has both near and
+    # far surfaces, so the full ratio distribution is legitimately wide. What
+    # matters is whether a dominant, tight cluster of correspondences agrees.
+    inlier_ratios = ratios[inliers] if np.any(inliers) else ratios
+    spread = float(np.median(np.abs(inlier_ratios - scale)) / max(abs(scale), 1e-9))
+
+    trend = _ratio_trend(inlier_ratios, mono_valid[inliers] if np.any(inliers) else mono_valid)
+
+    logger.info(
+        "Panorama-rig ERP alignment: scale=%.4f, inliers=%.1f%%, inlier spread=%.3f, "
+        "ratio trend=%.2f",
+        scale,
+        100.0 * inlier_ratio,
+        spread,
+        trend,
+    )
+
+    if inlier_ratio < min_inlier_ratio or spread > max_relative_spread or trend > max_ratio_trend:
+        raise ValueError(
+            "Depth/COLMAP scale fit is inconsistent "
+            f"(inlier ratio {inlier_ratio:.2f} < {min_inlier_ratio}, "
+            f"inlier spread {spread:.2f} > {max_relative_spread}, "
+            f"ratio trend {trend:.2f} > {max_ratio_trend}). "
+            "The sparse reconstruction and the monocular depth disagree about the "
+            "scene geometry; check Stage 3 registration quality before trusting "
+            "these depth maps."
+        )
+
+    residuals = metric_valid[inliers] - scale * mono_valid[inliers]
+    shift = float(np.median(residuals)) if np.any(inliers) else 0.0
     aligned_depth = depth_map.astype(np.float64) * scale + shift
 
     logger.info(
-        "Panorama-rig ERP alignment: scale=%.4f, shift=%.4f, valid_points=%d/%d",
+        "Panorama-rig ERP alignment applied: scale=%.4f, shift=%.4f, valid_points=%d/%d",
         scale,
         shift,
         int(np.sum(valid_mono)),
         sparse_points_3d.shape[0],
     )
     return aligned_depth.astype(np.float32), scale, shift
+
+
+def estimate_reconstruction_scale(
+    depth_maps: list[np.ndarray],
+    frame_names: list[str],
+    sparse_model: dict,
+    colmap_dataset_dir: Path | None,
+) -> float | None:
+    """Estimate the metric scale of a monocular SfM reconstruction.
+
+    Monocular SfM recovers geometry only up to an unknown global scale: the
+    camera path and point cloud are correct in shape but arbitrarily sized.
+    Metric depth maps give an independent measurement of the same scene, so the
+    ratio between sparse-point range and monocular depth recovers that scale.
+
+    Only the *scale* is estimated here (no shift), and the estimate is the
+    median over all frames, which is robust to a few bad correspondences.
+
+    Args:
+        depth_maps: Per-frame ERP radial depth maps.
+        frame_names: ERP frame file names, matching *depth_maps*.
+        sparse_model: Parsed COLMAP sparse model.
+        colmap_dataset_dir: Stage 2 dataset directory (for the rig manifest).
+
+    Returns:
+        Scale factor ``s`` such that ``sparse_geometry * s`` is metric, or
+        ``None`` when there is not enough evidence to estimate it.
+    """
+    panorama_rig_manifest = _load_panorama_rig_manifest(colmap_dataset_dir)
+    images = sparse_model.get("images", {})
+    points3d = sparse_model.get("points3D", {})
+    if not images or not points3d:
+        return None
+
+    ratios: list[float] = []
+    for depth_map, frame_name in zip(depth_maps, frame_names, strict=True):
+        entries = None
+        pose = None
+        if panorama_rig_manifest is not None:
+            entries = _find_panorama_rig_frame_entries(
+                images, frame_name, panorama_rig_manifest
+            )
+            if entries:
+                best_entry = max(entries, key=lambda e: len(e.get("point3D_ids", [])))
+                pose = _build_panorama_pose_from_rig_image(best_entry, panorama_rig_manifest)
+        if pose is None:
+            entry = _find_image_entry(images, frame_name)
+            if entry is None:
+                continue
+            entries = [entry]
+            pose = _build_camera_pose(entry)
+
+        sparse_points = _get_sparse_points_for_images(entries, points3d)
+        if sparse_points.shape[0] < 8:
+            continue
+
+        points_hom = np.hstack(
+            [sparse_points.astype(np.float64), np.ones((sparse_points.shape[0], 1))]
+        )
+        points_pano = (pose.astype(np.float64) @ points_hom.T).T[:, :3]
+        metric_range = np.linalg.norm(points_pano, axis=1)
+
+        h, w = depth_map.shape
+        directions = points_pano / np.maximum(metric_range[:, None], 1e-12)
+        u_img, v_img = _direction_to_erp_uv(directions, w, h)
+        u_idx = np.mod(np.round(u_img).astype(int), w)
+        v_idx = np.clip(np.round(v_img).astype(int), 0, h - 1)
+        mono = depth_map[v_idx, u_idx].astype(np.float64)
+        ok = (mono > 1e-6) & np.isfinite(mono) & np.isfinite(metric_range)
+        if not np.any(ok):
+            continue
+        # metric / sparse: the factor that turns sparse units into metres.
+        ratios.append(float(np.median(mono[ok] / metric_range[ok])))
+
+    if not ratios:
+        return None
+
+    scale = float(np.median(ratios))
+    if not np.isfinite(scale) or scale <= 0:
+        return None
+    logger.info(
+        "Estimated SfM-to-metric scale %.4f from %d frame(s) (per-frame: %s)",
+        scale,
+        len(ratios),
+        ", ".join(f"{r:.3f}" for r in ratios),
+    )
+    return scale
+
+
+def rescale_sparse_model(sparse_model: dict, scale: float) -> dict:
+    """Return a copy of *sparse_model* rescaled by *scale* into metric units.
+
+    Scaling the world means scaling every 3D point and every camera
+    translation; rotations are unaffected.
+
+    Args:
+        sparse_model: Parsed COLMAP sparse model.
+        scale: Multiplicative scale factor.
+
+    Returns:
+        A new sparse model dict in metric units.
+    """
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"scale must be positive and finite, got {scale}")
+
+    rescaled = dict(sparse_model)
+    rescaled["points3D"] = {
+        pid: {**pt, "x": pt["x"] * scale, "y": pt["y"] * scale, "z": pt["z"] * scale}
+        for pid, pt in sparse_model.get("points3D", {}).items()
+    }
+    rescaled["images"] = {
+        iid: {
+            **img,
+            "tx": img["tx"] * scale,
+            "ty": img["ty"] * scale,
+            "tz": img["tz"] * scale,
+        }
+        for iid, img in sparse_model.get("images", {}).items()
+    }
+    logger.info("Rescaled sparse reconstruction by %.4f into metric units", scale)
+    return rescaled
 
 
 def _build_camera_pose(image_entry: dict) -> np.ndarray:

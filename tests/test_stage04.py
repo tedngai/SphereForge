@@ -12,6 +12,25 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+
+def _bilinear_sample(image: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    """Bilinear sample of *image* at fractional (row, col) coordinates."""
+    h, w = image.shape
+    r0 = np.floor(rows).astype(int)
+    c0 = np.floor(cols).astype(int)
+    fr = rows - r0
+    fc = cols - c0
+    r0 = np.clip(r0, 0, h - 1)
+    r1 = np.clip(r0 + 1, 0, h - 1)
+    c0 = np.clip(c0, 0, w - 1)
+    c1 = np.clip(c0 + 1, 0, w - 1)
+    return (
+        image[r0, c0] * (1 - fr) * (1 - fc)
+        + image[r0, c1] * (1 - fr) * fc
+        + image[r1, c0] * fr * (1 - fc)
+        + image[r1, c1] * fr * fc
+    )
+
 # ---------------------------------------------------------------------------
 # T4.2 — Scene Analysis
 # ---------------------------------------------------------------------------
@@ -295,22 +314,31 @@ class TestAlignDepthToColmap:
         h, w = 64, 128
         true_scale = 3.0
         true_shift = 0.2
-        metric_depth = np.random.uniform(2.0, 8.0, (h, w)).astype(np.float32)
+        # A smooth depth field: the sparse points below are drawn from the same
+        # field, so the sparse/mono ratio is constant. (An i.i.d. random field
+        # would make the ratio drift with depth even for a perfect fit.)
+        yy, xx = np.mgrid[0:h, 0:w]
+        metric_depth = (
+            2.0 + 3.0 * (xx / w) + 2.0 * (yy / h) + 0.5 * np.sin(xx / 8.0)
+        ).astype(np.float32)
         mono_depth = ((metric_depth - true_shift) / true_scale).astype(np.float32)
 
         rng = np.random.RandomState(7)
         points_world = rng.normal(size=(24, 3)).astype(np.float64)
         points_world[:, 2] += 3.0
         metric_range = np.linalg.norm(points_world, axis=1)
-        directions = points_world / metric_range[:, None]
-        phi = np.arctan2(directions[:, 0], -directions[:, 2])
-        theta = np.arcsin(np.clip(directions[:, 1], -1.0, 1.0))
-        u = (phi + np.pi) / (2.0 * np.pi) * w
-        v = (np.pi / 2.0 - theta) / np.pi * h
-        u_idx = np.mod(np.round(u).astype(int), w)
-        v_idx = np.clip(np.round(v).astype(int), 0, h - 1)
-        for idx in range(len(u_idx)):
-            mono_depth[v_idx[idx], u_idx[idx]] = (metric_range[idx] - true_shift) / true_scale
+        # Draw each sparse point's depth from the same field as the ERP depth map,
+        # looked up at the pixel the point projects to (so the ratio is constant).
+        # The lookup is *bilinear*, matching how the alignment code samples the
+        # depth map; nearest-pixel sampling would put points on either side of a
+        # depth step and make the ratio drift with depth.
+        point_dirs = points_world / np.linalg.norm(points_world, axis=1, keepdims=True)
+        p_phi = np.arctan2(point_dirs[:, 0], -point_dirs[:, 2])
+        p_theta = np.arcsin(np.clip(point_dirs[:, 1], -1.0, 1.0))
+        p_u = (p_phi + np.pi) / (2.0 * np.pi) * w - 0.5
+        p_v = (np.pi / 2.0 - p_theta) / np.pi * h - 0.5
+        metric_range = _bilinear_sample(metric_depth, p_v, p_u).astype(np.float64)
+        points_world = point_dirs * metric_range[:, None]
 
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -374,12 +402,14 @@ class TestModelFactory:
     """Tests for model_factory.get_depth_estimator."""
 
     def test_stub_backend_detection(self) -> None:
-        """Diagnostics helper should flag the current shipped backends as stubs."""
+        """Only unimplemented backends should be flagged as stubs."""
         from sphereforge.stages.stage04_depth.model_factory import is_stub_depth_model
 
-        assert is_stub_depth_model("dap") is True
-        assert is_stub_depth_model("panda") is True
-        assert is_stub_depth_model("rpg360") is True
+        assert is_stub_depth_model("dap") is False
+        assert is_stub_depth_model("panda") is False
+        assert is_stub_depth_model("depth_anything_v2") is False
+        assert is_stub_depth_model("rpg360") is False
+        assert is_stub_depth_model("da360") is True
 
     def test_panda_returns_dap_alias(self) -> None:
         """Deprecated 'panda' should resolve to the DAP alias path."""
@@ -595,8 +625,9 @@ class TestRunStage04:
                 output_dir=output_dir,
             )
 
-            # Verify estimator was created per frame (thread-safe path)
-            assert mock_get_estimator.call_count == 3
+            # Verify the estimator is built once and reused across frames (model
+            # loading dominates runtime, so per-frame construction is wasteful).
+            assert mock_get_estimator.call_count == 1
 
             # Verify depth was estimated for each frame
             assert mock_estimator.estimate_depth.call_count == 3
@@ -612,14 +643,15 @@ class TestRunStage04:
             # Verify scene analysis was called
             mock_analyze.assert_called_once()
 
-            # Verify return structure
+            # Verify return structure. 'panda' resolves to the real 'dap'
+            # backend, so the run is no longer flagged as diagnostic-only.
             assert "depth_paths" in result
             assert "scene_params" in result
-            assert result["diagnostics"]["stub_depth_backend"] is True
+            assert result["diagnostics"]["stub_depth_backend"] is False
             assert result["diagnostics"]["aligned_frames"] == 3
             assert len(result["depth_paths"]) == 3
             diagnostics_text = (output_dir / "depth_diagnostics.json").read_text(encoding="utf-8")
-            assert '"stub_depth_backend": true' in diagnostics_text
+            assert '"stub_depth_backend": false' in diagnostics_text
 
     @patch("sphereforge.stages.stage04_depth.pipeline.analyze_depth_scene")
     @patch("sphereforge.stages.stage04_depth.pipeline.align_depth_to_colmap")
@@ -762,3 +794,197 @@ class TestPanDAModel:
 
         model = PanDAModel(device="cpu")
         assert model._device_str == "cpu"
+
+
+class TestDepthAlignmentGuard:
+    """The ERP/sparse scale fit must reject inconsistent geometry."""
+
+    def test_constant_ratio_is_accepted(self) -> None:
+        """A perfect correspondence yields the exact scale."""
+        from sphereforge.stages.stage04_depth.depth_alignment import (
+            _align_erp_depth_to_panorama_sparse_points,
+        )
+
+        h, w = 64, 128
+        mono = np.full((h, w), 2.0, dtype=np.float32)
+        # Points along -Z at radius 6 -> ratio 3.0 everywhere.
+        dirs = np.stack(
+            [
+                np.linspace(-0.5, 0.5, 40),
+                np.linspace(-0.3, 0.3, 40),
+                -np.ones(40),
+            ],
+            axis=1,
+        )
+        dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+        points = dirs * 6.0
+        aligned, scale, _shift = _align_erp_depth_to_panorama_sparse_points(
+            mono, points, np.eye(4)
+        )
+        assert scale == pytest.approx(3.0, rel=1e-3)
+        assert aligned.shape == (h, w)
+
+    def test_drifting_ratio_is_rejected(self) -> None:
+        """A ratio that drifts with depth indicates wrong correspondences."""
+        from sphereforge.stages.stage04_depth.depth_alignment import (
+            _align_erp_depth_to_panorama_sparse_points,
+        )
+
+        h, w = 64, 128
+        # Monocular depth varies smoothly with ERP row.
+        mono = np.tile(np.linspace(1.0, 5.0, h, dtype=np.float32)[:, None], (1, w))
+        # Sparse points whose radius grows much faster than the mono depth:
+        # the ratio then depends systematically on depth.
+        rows = np.linspace(0, h - 1, 60)
+        theta = np.pi / 2.0 - (rows + 0.5) / h * np.pi
+        dirs = np.stack([np.zeros_like(theta), np.sin(theta), -np.cos(theta)], axis=1)
+        radius = 2.0 + 40.0 * (rows / h) ** 2
+        points = dirs * radius[:, None]
+
+        with pytest.raises(ValueError, match="inconsistent"):
+            _align_erp_depth_to_panorama_sparse_points(mono, points, np.eye(4))
+
+    def test_ratio_trend_ignores_constant_ratio(self) -> None:
+        """A perfectly constant ratio has no trend by definition."""
+        from sphereforge.stages.stage04_depth.depth_alignment import _ratio_trend
+
+        mono = np.linspace(1.0, 5.0, 50)
+        assert _ratio_trend(np.full(50, 3.0), mono) == 0.0
+
+    def test_ratio_trend_detects_drift(self) -> None:
+        """A ratio that tracks depth has a large trend."""
+        from sphereforge.stages.stage04_depth.depth_alignment import _ratio_trend
+
+        mono = np.linspace(1.0, 5.0, 50)
+        assert _ratio_trend(mono * 2.0, mono) > 0.9
+
+
+class TestMetricRescaling:
+    """Monocular SfM is scale-free; metric depth must pin the scale down."""
+
+    def test_rescale_scales_points_and_translations(self) -> None:
+        """Points and camera translations scale; rotations do not."""
+        from sphereforge.stages.stage04_depth.depth_alignment import rescale_sparse_model
+
+        model = {
+            "cameras": {1: {"model": "PINHOLE", "width": 8, "height": 8, "params": [4, 4, 4, 4]}},
+            "images": {
+                1: {
+                    "name": "a.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 2.0,
+                    "ty": -4.0,
+                    "tz": 6.0,
+                    "camera_id": 1,
+                    "point3D_ids": [1],
+                }
+            },
+            "points3D": {1: {"x": 1.0, "y": 2.0, "z": 3.0}},
+        }
+
+        out = rescale_sparse_model(model, 0.5)
+
+        assert out["points3D"][1]["x"] == pytest.approx(0.5)
+        assert out["points3D"][1]["y"] == pytest.approx(1.0)
+        assert out["points3D"][1]["z"] == pytest.approx(1.5)
+        assert out["images"][1]["tx"] == pytest.approx(1.0)
+        assert out["images"][1]["ty"] == pytest.approx(-2.0)
+        assert out["images"][1]["tz"] == pytest.approx(3.0)
+        # Quaternion is untouched, and the input model is not mutated.
+        assert out["images"][1]["qw"] == 1.0
+        assert model["points3D"][1]["x"] == 1.0
+
+    def test_rescale_rejects_bad_scale(self) -> None:
+        """A non-positive or non-finite scale is a programming error."""
+        from sphereforge.stages.stage04_depth.depth_alignment import rescale_sparse_model
+
+        with pytest.raises(ValueError, match="positive"):
+            rescale_sparse_model({"points3D": {}, "images": {}}, 0.0)
+        with pytest.raises(ValueError, match="positive"):
+            rescale_sparse_model({"points3D": {}, "images": {}}, float("nan"))
+
+    def test_estimate_scale_recovers_known_factor(self) -> None:
+        """A reconstruction scaled by k is rescaled back by 1/k."""
+        from sphereforge.stages.stage04_depth.depth_alignment import (
+            estimate_reconstruction_scale,
+        )
+
+        h, w = 64, 128
+        # Metric depth: a constant 2.0 m everywhere.
+        depth = np.full((h, w), 2.0, dtype=np.float32)
+
+        # A sparse point straight ahead at a *reconstruction* range of 20 units.
+        k = 10.0  # reconstruction is 10x too large
+        recon_range = 2.0 * k
+        model = {
+            "cameras": {1: {"model": "PINHOLE", "width": w, "height": h, "params": [60, 60, w / 2, h / 2]}},
+            "images": {
+                1: {
+                    "name": "frame_000.png",
+                    "qw": 1.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
+                    "camera_id": 1,
+                    "point3D_ids": list(range(1, 21)),
+                }
+            },
+            "points3D": {},
+        }
+        # Spread points around the viewing sphere at the reconstruction range.
+        rng = np.random.RandomState(0)
+        dirs = rng.normal(size=(20, 3))
+        dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+        for i, d in enumerate(dirs):
+            model["points3D"][i + 1] = {
+                "x": float(d[0] * recon_range),
+                "y": float(d[1] * recon_range),
+                "z": float(d[2] * recon_range),
+            }
+
+        scale = estimate_reconstruction_scale([depth], ["frame_000.png"], model, None)
+
+        assert scale is not None
+        assert scale == pytest.approx(1.0 / k, rel=0.05)
+
+
+class TestUnalignedFrameFallback:
+    """A frame that fails SfM alignment must not stay in raw monocular units."""
+
+    def test_failed_frames_get_median_aligned_scale(self, tmp_path) -> None:
+        """Failed frames are rescaled by the median scale of the aligned frames."""
+        from sphereforge.common.io import read_depth, write_depth
+        from sphereforge.stages.stage04_depth.pipeline import _rescale_unaligned_frames
+
+        paths = [tmp_path / f"f{i}_depth.npy" for i in range(4)]
+        raw = np.full((4, 8), 2.0, dtype=np.float32)
+        for p in paths:
+            write_depth(p, raw)
+        results = [
+            (paths[0], raw * 1.2, 1.2, 0.0, True),
+            (paths[1], raw * 1.4, 1.4, 0.0, True),
+            (paths[2], raw * 1.3, 1.3, 0.0, True),
+            (paths[3], raw.copy(), 1.0, 0.0, False),
+        ]
+        out = _rescale_unaligned_frames(results)
+
+        assert out[3][2] == pytest.approx(1.3)
+        assert out[3][4] is False  # still reported as unaligned
+        assert np.allclose(out[3][1], 2.6)
+        assert np.allclose(read_depth(paths[3]), 2.6)
+        for got, want in zip(out[:3], results[:3], strict=True):
+            assert got[0] == want[0] and got[2] == want[2] and got[4] is True
+
+    def test_no_aligned_frames_leaves_results_unchanged(self, tmp_path) -> None:
+        """With nothing to borrow a scale from, results pass through."""
+        from sphereforge.stages.stage04_depth.pipeline import _rescale_unaligned_frames
+
+        raw = np.ones((2, 2), dtype=np.float32)
+        results = [(tmp_path / "a.npy", raw, 1.0, 0.0, False)]
+        assert _rescale_unaligned_frames(results) is results

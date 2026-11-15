@@ -1045,3 +1045,30 @@ class TestWeightedBudgetAllocation:
 
         weighted = _compute_weighted_hole_count(hole_mask, gap_classes, FakeConfig())
         assert weighted == 100 * 2.0  # all missing_geometry at weight 2.0
+
+
+class TestGsDiffCameraCap:
+    """Diffusion inpainting must be bounded so Stage 7 cannot run unbounded."""
+
+    def test_cap_defaults_to_a_finite_number(self) -> None:
+        """The default limits how many cameras get a diffusion pass."""
+        from sphereforge.config import Stage07Config
+
+        config = Stage07Config()
+        assert config.gsdiff_max_cameras > 0
+
+    def test_cap_of_zero_means_unlimited(self) -> None:
+        """0 is the documented escape hatch for no limit."""
+        from sphereforge.config import Stage07Config
+
+        assert Stage07Config(gsdiff_max_cameras=0).gsdiff_max_cameras == 0
+
+    def test_negative_cap_is_rejected(self) -> None:
+        """A negative cap is meaningless and must fail validation."""
+        import pydantic
+        import pytest
+
+        from sphereforge.config import Stage07Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Stage07Config(gsdiff_max_cameras=-1)

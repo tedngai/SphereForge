@@ -66,6 +66,25 @@ def final_rap_prune(
     logger.info("Final RAP pruning: %d Gaussians, min_opacity=%.4f, max_scale_ratio=%.1f",
                 n_before, min_opacity, max_scale_ratio)
 
+    # A single non-finite position poisons the centroid, which makes the scene
+    # extent NaN, which makes the scale mask reject *every* Gaussian. Drop the
+    # offenders up front instead of losing the whole scene to them.
+    finite = np.isfinite(positions).all(axis=1)
+    if not finite.all():
+        n_bad = int((~finite).sum())
+        logger.warning(
+            "Final RAP pruning: dropping %d Gaussian(s) with non-finite positions", n_bad
+        )
+        keep = np.where(finite)[0]
+        gaussians = {k: (v[keep] if v is not None else None) for k, v in gaussians.items()}
+        positions = gaussians["positions"]
+        opacities = gaussians["opacities"]
+        scales = gaussians["scales"]
+        rotations = gaussians["rotations"]
+        colors = gaussians["colors"]
+        sh_coeffs = gaussians.get("sh_coeffs")
+        n_before = positions.shape[0]
+
     if n_before == 0:
         logger.warning("Final RAP pruning: no Gaussians to prune")
         empty_result = {k: np.array([], dtype=v.dtype).reshape(0, *v.shape[1:])
@@ -81,10 +100,12 @@ def final_rap_prune(
     scales_t = torch.from_numpy(activated_scales)
     opacities_t = torch.from_numpy(activated_opacities)
 
-    # Compute scene extent for scale pruning
+    # Compute scene extent for scale pruning. Use a high percentile rather than
+    # the maximum so a handful of distant floaters cannot inflate the threshold
+    # and let genuinely oversized Gaussians survive.
     centroid = pos_t.mean(dim=0)
     dists = (pos_t - centroid).norm(dim=1)
-    scene_extent = dists.max().clamp(min=1e-6).item()
+    scene_extent = torch.quantile(dists, 0.95).clamp(min=1e-6).item()
 
     # Track opacity and scale masks separately for stats
     opacity_mask = opacities_t >= min_opacity
@@ -130,6 +151,22 @@ def final_rap_prune(
 
     # Apply keep mask to all arrays
     n_after = int(keep_mask.sum())
+
+    # A filter that removes *everything* is a misconfiguration, not a result: an
+    # empty export is far worse than a few surviving floaters. Keep the input and
+    # say so loudly rather than silently writing an empty scene.
+    if n_after == 0 and n_before > 0:
+        logger.error(
+            "Final RAP pruning would remove all %d Gaussians "
+            "(min_opacity=%.4f, max_scale_ratio=%.2f, scene_extent=%.3f); "
+            "keeping the input unchanged — check the pruning thresholds",
+            n_before,
+            min_opacity,
+            max_scale_ratio,
+            scene_extent,
+        )
+        keep_mask = np.ones(n_before, dtype=bool)
+        n_after = n_before
     pruned_gaussians: dict = {
         "positions": positions[keep_mask],
         "opacities": opacities[keep_mask],

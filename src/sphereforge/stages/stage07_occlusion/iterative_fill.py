@@ -367,20 +367,29 @@ def _approximate_alpha_and_depth_render(
     px_int = np.clip(np.round(px).astype(int), 0, W - 1)
     py_int = np.clip(np.round(py).astype(int), 0, H - 1)
 
-    # Simple splat: accumulate alpha and depth (front-most wins for depth)
-    for i in range(len(px_int)):
-        yi, xi = py_int[i], px_int[i]
-        if alpha_map[yi, xi] < vis_opa[i]:
-            depth_map[yi, xi] = vis_depth[i]
-        alpha_map[yi, xi] += vis_opa[i]
+    # Simple splat: accumulate alpha and keep the front-most depth per pixel.
+    # This is vectorised — a per-Gaussian Python loop here made Stage 7 take
+    # minutes per camera even for a few hundred Gaussians.
+    flat_idx = py_int * W + px_int
+    alpha_flat = alpha_map.reshape(-1)
+    depth_flat = depth_map.reshape(-1)
+
+    # Accumulate alpha with np.add.at (handles duplicate pixel indices).
+    np.add.at(alpha_flat, flat_idx, vis_opa)
+
+    # Front-most depth: sort by depth descending so the nearest write wins.
+    order = np.argsort(-vis_depth)
+    depth_flat[flat_idx[order]] = vis_depth[order]
 
     projected_footprints = np.mean(vis_scales, axis=1) * fx / np.maximum(vis_depth, 1e-6)
     if projected_footprints.size > 0:
-        # Approximate Gaussian footprint with a cheap fixed-radius dilation
-        # rather than one-pixel point stamps; this keeps hole coverage closer
-        # to what the actual splat renderer would report.
+        # Approximate each Gaussian's footprint with a dilation of its centre
+        # pixel. The radius must track the *projected* size: stamping single
+        # pixels and dilating by a hard-coded few pixels leaves a view that is
+        # >98% "hole" even though the scene is well covered, which makes Stage 7
+        # fabricate enormous numbers of Gaussians.
         dilation_radius = int(
-            np.clip(np.log2(np.percentile(projected_footprints, 50) + 1.0), 1, 8)
+            np.clip(np.round(np.percentile(projected_footprints, 90) / 2.0), 1, 64)
         )
         if dilation_radius > 0:
             alpha_map = maximum_filter(alpha_map, size=2 * dilation_radius + 1, mode="nearest")
@@ -635,7 +644,6 @@ def _apply_gsdiff_fill(
     Uses the configured inpainting backend (default: Stable Diffusion).
     Falls back gracefully if the inpainting model is not available.
     """
-    import torch
 
     from sphereforge.stages.stage07_occlusion.inpainting import create_inpainter
     from sphereforge.stages.stage07_occlusion.lpips_filter import filter_hallucinations
@@ -658,7 +666,23 @@ def _apply_gsdiff_fill(
         logger.warning(message)
         return
 
-    for cam_idx, cam in enumerate(novel_cameras):
+    # Diffusion inpainting is by far the most expensive step (one network pass
+# per camera). Process the cameras with the most hole pixels first and stop
+# after ``gsdiff_max_cameras`` so a run stays bounded.
+    candidates = [
+        idx for idx in range(len(novel_cameras)) if np.any(per_cam_masks[idx])
+    ]
+    if config.gsdiff_max_cameras > 0 and len(candidates) > config.gsdiff_max_cameras:
+        candidates.sort(key=lambda i: -int(np.sum(per_cam_masks[i])))
+        logger.info(
+            "GS-Diff: limiting inpainting to the %d of %d cameras with the most holes",
+            config.gsdiff_max_cameras,
+            len(candidates),
+        )
+        candidates = candidates[: config.gsdiff_max_cameras]
+
+    for cam_idx in candidates:
+        cam = novel_cameras[cam_idx]
         hole_mask = per_cam_masks[cam_idx]
         if not np.any(hole_mask):
             continue
@@ -668,7 +692,7 @@ def _apply_gsdiff_fill(
             _prepare_gsplat_tensors(gaussians)
 
         h, w = cam.get("height", 1024), cam.get("width", 1024)
-        rendered_image, rendered_depth = _render_view_gsplat(
+        rendered_image, _rendered_depth = _render_view_gsplat(
             _GS_PLAT_CACHE, cam, h, w
         )
         if rendered_image is None:

@@ -1,6 +1,6 @@
 """Integration test: stages 2 → 5 on a tiny synthetic dataset.
 
-Creates 2 synthetic ERP frames (256×512), runs Stage 2 cubemap extraction,
+Creates 2 synthetic ERP frames (256x512), runs Stage 2 cubemap extraction,
 fakes Stage 3 (sparse COLMAP model) and Stage 4 (depth maps), then runs
 Stage 5 and asserts a valid PLY is produced.
 """
@@ -11,9 +11,8 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 
-from sphereforge.common.io import read_image, read_ply, write_image
+from sphereforge.common.io import read_ply, write_image
 from sphereforge.config import Stage02Config, Stage05Config
 from sphereforge.stages.stage02_cubemap.pipeline import run_stage02
 from sphereforge.stages.stage05_seeding.pipeline import run_stage05
@@ -57,10 +56,8 @@ def test_stages_2_through_5_produce_valid_ply() -> None:
 
         # ---- Stage 2: cubemap extraction ----
         stage02_config = Stage02Config(
-            crop_size=512,
+            projection_layout="cubemap",
             crop_resolution=256,
-            yaw_diversify=True,
-            num_yaw_steps=2,
             generate_masks=False,  # skip YOLO dependency
         )
         cubemap_dir = tmpdir_path / "cubemaps"

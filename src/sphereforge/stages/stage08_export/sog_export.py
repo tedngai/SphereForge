@@ -20,8 +20,10 @@ from sphereforge.common.io import read_ply
 
 logger = logging.getLogger("sphereforge.stage08.sog_export")
 
-# SOG file format magic number and version
-SOG_MAGIC = b"SOG1"
+# SOG file format magic number and version.
+# The magic is the 4-byte ASCII tag "SOGF" ("SOG File"); the format version
+# follows as a little-endian uint32 in the header.
+SOG_MAGIC = b"SOGF"
 SOG_VERSION = 1
 
 

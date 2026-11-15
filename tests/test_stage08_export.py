@@ -292,9 +292,14 @@ class TestPipeline:
     """Tests for Stage 8 pipeline."""
 
     def test_resolve_max_scale_ratio(self):
-        from sphereforge.stages.stage08_export.pipeline import _resolve_max_scale_ratio
+        from sphereforge.stages.stage08_export.pipeline import (
+            AUTO_MAX_SCALE_RATIO,
+            _resolve_max_scale_ratio,
+        )
 
-        assert _resolve_max_scale_ratio("auto") == 0.1
+        # "auto" must be an outlier filter, not a detail filter: a 0.1 ratio
+        # rejected every Gaussian and emptied the export.
+        assert _resolve_max_scale_ratio("auto") == AUTO_MAX_SCALE_RATIO
         assert _resolve_max_scale_ratio("0.25") == 0.25
 
     def test_resolve_max_scale_ratio_rejects_invalid(self):
@@ -337,3 +342,145 @@ class TestPipeline:
         result = run_stage08(config, sample_ply, tmp_path / "export")
         assert "n_before" in result["stats"]
         assert "n_after" in result["stats"]
+
+
+class TestFinalPruningNonFinite:
+    """Non-finite Gaussians must not destroy the whole export."""
+
+    def _gaussians(self, n: int = 6) -> dict:
+        return {
+            "positions": np.random.default_rng(0).normal(size=(n, 3)).astype(np.float32),
+            "opacities": np.full(n, 0.9, dtype=np.float32),
+            "scales": np.full((n, 3), 0.01, dtype=np.float32),
+            "rotations": np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (n, 1)),
+            "colors": np.full((n, 3), 0.5, dtype=np.float32),
+        }
+
+    def test_nan_position_is_dropped_not_fatal(self) -> None:
+        """One NaN position used to make the scene extent NaN and prune all."""
+        from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
+
+        gaussians = self._gaussians()
+        gaussians["positions"][2] = np.nan
+
+        pruned, stats = final_rap_prune(gaussians)
+
+        assert stats["n_after"] > 0
+        assert pruned["positions"].shape[0] == stats["n_after"]
+        assert np.isfinite(pruned["positions"]).all()
+
+    def test_all_finite_is_unchanged(self) -> None:
+        """A clean scene keeps every Gaussian."""
+        from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
+
+        pruned, stats = final_rap_prune(self._gaussians())
+
+        assert stats["n_after"] == 6
+        assert np.isfinite(pruned["positions"]).all()
+
+
+class TestPruneNeverEmptiesExport:
+    """A misconfigured threshold must not silently produce an empty scene."""
+
+    def _gaussians(self, n: int = 8) -> dict:
+        return {
+            "positions": np.random.default_rng(0).normal(size=(n, 3)).astype(np.float32),
+            "opacities": np.full(n, 0.9, dtype=np.float32),
+            "scales": np.full((n, 3), 1.0, dtype=np.float32),
+            "rotations": np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (n, 1)),
+            "colors": np.full((n, 3), 0.5, dtype=np.float32),
+        }
+
+    def test_impossible_scale_ratio_keeps_input(self) -> None:
+        """A ratio that rejects every Gaussian falls back to keeping them all."""
+        from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
+
+        # Scales of 1.0 against a tiny extent: ratio 0.01 rejects everything.
+        pruned, stats = final_rap_prune(self._gaussians(), max_scale_ratio=0.01)
+
+        assert stats["n_after"] == stats["n_before"]
+        assert pruned["positions"].shape[0] == stats["n_before"]
+
+    def test_reasonable_ratio_still_prunes(self) -> None:
+        """The guard must not disable pruning that legitimately removes some."""
+        from sphereforge.stages.stage08_export.final_pruning import final_rap_prune
+
+        gaussians = self._gaussians()
+        gaussians["opacities"][:2] = 0.0  # clearly transparent
+
+        _, stats = final_rap_prune(gaussians, min_opacity=0.01, max_scale_ratio=0.5)
+
+        assert stats["n_pruned_opaque"] == 2
+        assert stats["n_after"] < stats["n_before"]
+
+
+class TestAutoMaxScaleRatio:
+    """The "auto" scale ratio must be an outlier filter, not a detail filter."""
+
+    def test_auto_ratio_keeps_typical_gaussians(self) -> None:
+        """Typical Gaussians are a large fraction of scene extent.
+
+        A ratio of 0.1 (0.68 m against a 6.8 m scene) rejected every Gaussian
+        and emptied the export; the auto value must be well above that.
+        """
+        from sphereforge.stages.stage08_export.pipeline import (
+            AUTO_MAX_SCALE_RATIO,
+            _resolve_max_scale_ratio,
+        )
+
+        assert AUTO_MAX_SCALE_RATIO >= 0.5
+        assert _resolve_max_scale_ratio("auto") == AUTO_MAX_SCALE_RATIO
+
+    def test_explicit_ratio_is_honoured(self) -> None:
+        """A numeric config value is used verbatim."""
+        from sphereforge.stages.stage08_export.pipeline import _resolve_max_scale_ratio
+
+        assert _resolve_max_scale_ratio("0.25") == 0.25
+
+    def test_invalid_ratio_is_rejected(self) -> None:
+        """A non-positive ratio is a configuration error."""
+        import pytest
+
+        from sphereforge.stages.stage08_export.pipeline import _resolve_max_scale_ratio
+
+        with pytest.raises(ValueError):
+            _resolve_max_scale_ratio("0")
+
+
+class TestExportedQuaternionsAreUnitNorm:
+    """3DGS PLY files store unit quaternions; export must normalise them."""
+
+    def test_drifted_rotations_are_normalised(self, tmp_path) -> None:
+        """Optimisation drifts quaternions off the unit sphere (0.58-1.62).
+
+        The exported file must be standards-compliant regardless.
+        """
+        import numpy as np
+
+        from sphereforge.common.io import read_ply
+        from sphereforge.config import Stage08Config
+        from sphereforge.stages.stage08_export.pipeline import run_stage08
+
+        n = 12
+        rng = np.random.default_rng(0)
+        rotations = rng.normal(size=(n, 4)).astype(np.float32)
+        rotations *= rng.uniform(0.6, 1.6, size=(n, 1)).astype(np.float32)
+        gaussians = {
+            "positions": rng.normal(size=(n, 3)).astype(np.float32),
+            "opacities": np.full(n, 0.9, dtype=np.float32),
+            "scales": np.full((n, 3), 0.05, dtype=np.float32),
+            "rotations": rotations,
+            "colors": np.full((n, 3), 0.5, dtype=np.float32),
+        }
+        source = tmp_path / "in.ply"
+        from sphereforge.common.io import write_ply
+
+        write_ply(source, **gaussians)
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        run_stage08(Stage08Config(), source, out_dir)
+
+        exported = read_ply(out_dir / "final.ply")
+        norms = np.linalg.norm(exported["rotations"], axis=1)
+        assert np.allclose(norms, 1.0, atol=1e-4)

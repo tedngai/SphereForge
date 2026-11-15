@@ -1000,3 +1000,200 @@ The remaining practical follow-up is Stage 4 runtime readiness:
 - keep the updated Stage 4 tests aligned with current factory behavior (`panda` -> `DAPModel` alias, lowercase `da360` error text),
 - and decide whether to integrate a real non-stub ERP depth backend for live Stage 4 reruns, or explicitly keep Stage 4 in diagnostic-only mode for now.
 Update `TRAINING_CONTEXT.md` and `PROGRESS.md` with concrete outcomes." 
+
+---
+
+## 2026-11-12 — End-to-end run is working; use this as the baseline
+
+**Status:** all 8 stages complete on `data/raw/synthetic_room.mp4` and write a
+valid `final.ply` (56,365 Gaussians) + `viewer.html`.
+
+### How to run
+
+```bat
+scripts\sphereforge_env.bat python -m sphereforge.cli process data\raw\synthetic_room.mp4 --config configs\e2e_smoke.yaml
+```
+
+`--stage N` runs **only** stage N; omit it to run the whole pipeline. Use
+`--resume` to reuse existing outputs. `SPHEREFORGE_ENABLE_PYCOLMAP_RIG=1` is
+needed for the panorama-rig pycolmap backend.
+
+### Environment prerequisites (already set up here)
+
+- `.venv` (Python 3.12) with torch 2.7.1+cu126, gsplat 1.5.3, pycolmap 4.2.1.
+- `.cuda-toolkit/cuda` — local CUDA 12.6 toolkit from `scripts/fetch_cuda_toolkit.py`.
+- gsplat CUDA extension built via `scripts/build_gsplat_cuda.bat` (cached in `.torch-ext/`).
+- Visual Studio 2019 Build Tools (`vcvars64.bat`) provides `cl.exe` and `ninja`.
+
+### Measured quality (synthetic room, ground truth known)
+
+| Metric | Value | Ground truth |
+|---|---|---|
+| Stage 3 registration | 36/36 images, 2105 points | 36 rig views |
+| Stage 4 DAP depth median | 2.03 m | 2.14 m |
+| SfM-to-metric scale | 0.0706 | (SfM is scale-free) |
+| Stage 6 training PSNR | 8.5 → 20.5 dB | — |
+| Stage 7 hole coverage | 0.74 → 0.52 | — |
+| Final Gaussian radial p50 | 4.7 m | 1.5–2.5 m |
+
+### Known issues to address next
+
+1. **DAP depth has heavy tails.** Median is accurate but the ratio to ground
+   truth spans 0.25–4.3x, leaving floater Gaussians outside the room (bbox
+   reaches ±9 m vs a ±2.5 m room). Fixing the ERP fusion at grazing angles is
+   the single highest-value improvement.
+2. **Stage 7 inflates the Gaussian count.** It adds ~54k Gaussians to reach the
+   60k cap. `max_gaussians` in `configs/e2e_smoke.yaml` is the throttle.
+3. **GS-Diff inpainting is skipped** — needs `diffusers >= 0.38`.
+4. **SfM scale is one global factor.** Per-frame drift is not corrected; a
+   per-frame alignment would help longer captures.
+
+### Gotchas that cost the most time
+
+- gsplat needs `cicc.exe` from `nvvm/bin` on PATH, not just `bin`.
+- gsplat's JIT passes `-Wno-attributes` (a GCC flag) to MSVC; patched in
+  `.venv/.../gsplat/cuda/_backend.py` for win32.
+- `cv2.BORDER_WRAP` does not wrap — normalise ERP `u` with `np.mod` instead.
+- Stage 5 writes 0–255 colours and activated opacity/scale; Stage 6 works in
+  0–1 SH space and raw logits. Convert at the boundary, and write PLYs back in
+  the activated 3DGS convention.
+
+---
+
+## 2026-11-14 Current state (round 14)
+
+### Working end-to-end configuration
+
+`configs/e2e_smoke.yaml` (data dir `data/e2e`) runs all 8 stages clean from
+scratch on `data/raw/synthetic_room.mp4`. Scene B uses
+`configs/e2e_smoke_b.yaml` (data dir `data/e2e_b`) on
+`data/raw/synthetic_room_b.mp4`.
+
+Key settings: `iterations: 8000`, `densify_until_iter: 4000`, `stride: 8`,
+`gsdiff_backend: sd`, `stage07.max_gaussians: 60000`.
+
+### Guards that must stay in place
+
+These each fixed a total-failure mode; removing any one empties the export or
+crashes a stage.
+
+| Guard | Failure it prevents |
+|---|---|
+| Stage 3 `unconstrained_attempts: 3` | Rig-constrained mapping collapses the camera path to a line |
+| `_rescale_sparse_points` scales points **and** poses **and** `sensor_from_rig` | Cameras and points end up at different scales (ratio 1.99 -> 4.87) |
+| Stage 7 input cap (`max_gaussians`) | 386k Gaussians + SD inpainting exhausts 8 GB VRAM |
+| `AUTO_MAX_SCALE_RATIO = 0.5` | A 0.1 ratio rejects every Gaussian (they are ~1.1 m against a 6.8 m scene) |
+| `final_rap_prune` empty-result guard | Any over-aggressive threshold silently writes an empty scene |
+| Stage 8 quaternion normalisation | Exported PLY is not standards-compliant (norms 0.58-1.62) |
+
+### pycolmap gotchas (cost several rounds)
+
+- `write_text()` on a panorama-rig model **silently drops observations**
+  (60,740 -> 49,710). Always use the binary writer for rig models.
+- `Frame.set_cam_from_world` keeps only the last sensor written, so a rig
+  cannot be assembled that way.
+- `sensor_from_rig` can carry non-zero translations; they are world-space
+  distances and must be scaled with the rig pose.
+- The mapper is non-deterministic: identical inputs give 7.4k-8.2k points.
+
+### Measured quality
+
+| | Scene A (walls 2.5 m) | Scene B (walls 3.5 m) |
+|---|---|---|
+| Exported Gaussians | 32,122 | 46,743 |
+| Radial p50 / p90 | 2.41 / 3.13 m | 2.12 / 2.73 m |
+| Inside room | 66.5% | 92.2% |
+| PSNR @ iter 4000 | 21.75 | 24.92 |
+
+### Known remaining gap
+
+`camera_to_point_radius` sits at ~1.9-2.0 (cameras outside the point cloud)
+against a ground-truth value of 0.24 for the synthetic room. The mapper
+consistently produces a point cloud tighter than the camera path. This is
+systematic, not run-to-run noise: three attempts land within 1.89-2.26.
+Best-of-N cannot fix a bias that affects every attempt.
+
+---
+
+## 2026-11-15 — Four correctness fixes; Stage 3 rig fallback is the next blocker
+
+Details in `PROGRESS.md` (2026-11-15 entry). Summary:
+
+1. **Stage 4 depth was disparity.** DA-V2 relative output is now inverted, and
+   DAP fuses per-view disparity with an overlap-based affine fit. Depth now
+   correlates positively with ground truth (+0.57..+0.73; was -0.48..-0.81).
+2. **Stage 6 densification** is gradient-based (3DGS ADC trigger + LAS split),
+   with split/clone in activated space. Growth now plateaus (~40-50k on the
+   synthetic room) instead of riding `max_gaussians`.
+3. **No ERP latitude weighting on pinhole rig views** (was zeroing the top and
+   bottom rows of every training image).
+4. **SH bands are exported** (`f_rest_*`) from Stage 6 and carried by Stage 7/8.
+
+Rerun on `data/e2e_fix` (Stages 4-6, same SfM as `data/e2e`): 39,695 Gaussians
+vs 358,485, train-view PSNR 22.91 vs 21.99 dB, mean opacity 0.178 vs 0.027.
+
+### Stage 3 replaced the rig model with an inconsistent one (fixed later the same day)
+
+`_camera_path_is_degenerate` in `stage03_sfm/pycolmap_probe.py` uses
+`cam_from_world.translation` (t) as if it were the camera centre. For rig
+sensors sharing an optical centre, t differs per sensor, so the correct
+rig-constrained model is judged "collapsed to a line" and replaced with an
+unconstrained run (`unconstrained_attempts`). Evidence on `data/e2e`:
+
+- final model: 12 single-sensor rigs, 144 frames (no rig constraint);
+- the 12 views of one panorama are ~2.0 units apart (path radius ~0.32);
+- each camera implies a different panorama rotation (constant 33-147 deg
+  offset per camera, stable within 0.3 deg across frames).
+
+Stage 4 alignment, Stage 5 frame placement and Stage 6 all depend on these
+poses, so geometry stays poor until this is fixed. Note the synthetic camera
+path is itself nearly straight (diagonal in x/z, y varies by 0.12 m), so a
+"collapsed to a line" verdict on it is not evidence of failure.
+
+**Resolved the same day — see next section.**
+
+---
+
+## 2026-11-15 (later) — Stage 3 fixed; current baseline
+
+Two Stage 3 bugs fixed (details in `PROGRESS.md`):
+
+1. Camera positions were read from `cam_from_world.translation` instead of the
+   optical centre `-R^T t` in the degeneracy check, the rigidity "repair" and
+   outlier pruning. The correct rig model was being thrown away. The rig is now
+   kept; the fallback triggers only on a true pure-rotation collapse (path
+   radius < 1% of scene radius).
+2. COLMAP never received Stage 2's intrinsics and used `f = 1.2 * width`
+   (460.8 vs the real 147.3 for 105 deg / 384 px views), held fixed during
+   mapping. Stage 3 now writes Stage 2's `cameras.txt` into the database.
+
+### Current baseline (synthetic room, `data/e2e_s3`, `configs/e2e_smoke.yaml` + data_dir override)
+
+| Metric | Value |
+|---|---|
+| Camera path vs ground truth | 0.009 m RMSE |
+| SfM points inside room / median distance-to-wall ratio | 89.7% / 1.00 |
+| Stage 4 frames aligned | 12/12, per-frame scale 1.000 +-0.001 |
+| Stage 6 train-view PSNR mean / min | 30.43 / 25.33 dB (was 21.99 / 20.59) |
+| Stage 6 Gaussians / inside room | 164,505 / 71.3% |
+
+### Guards from round 14 that changed meaning
+
+- `unconstrained_attempts` now only runs after a genuine pure-rotation
+  collapse; it no longer fires on the synthetic room.
+- "Rig rigidity enforcement" is now a check; a rig model needs no repair.
+- `camera_to_point_radius` ~1.9-2.0 was caused by the focal-length bug.
+
+### Next candidates
+
+- Stage 5 seed tails (52.5% inside room, p95 1.7x wall distance).
+- Stage 5 grazing/sky filters still measured from frame 0's origin.
+- Stage 6 position LR schedule (no scene-extent scaling or decay).
+- Held-out-view evaluation, and a repo script for the ground-truth checks.
+- Run on real footage: everything above is measured on the synthetic room.
+
+### Environment notes for this session
+
+- DA-V2 weights live in the repo-local HF cache: set `HF_HOME=<repo>\.hf-cache`
+  and `HF_HUB_OFFLINE=1` (the user-level HF cache is not writable here).
+- gsplat runs need `scripts\sphereforge_env.bat` (CUDA toolkit + MSVC on PATH).

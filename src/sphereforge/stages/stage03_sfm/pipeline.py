@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,6 +35,323 @@ logger = logging.getLogger("sphereforge.stage03.pipeline")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 _PYCOLMAP_ENABLE_ENV = "SPHEREFORGE_ENABLE_PYCOLMAP_RIG"
 _PYCOLMAP_PYTHON_ENV = "SPHEREFORGE_PYCOLMAP_PYTHON"
+
+
+def _share_cameras_across_rig_frames(database_path: Path) -> int:
+    """Point every image at the camera record of its rig sensor.
+
+    ``pycolmap.extract_features`` registers a fresh camera for each image. In a
+    panorama rig the same physical lens captures every frame, so all images from
+    one rig camera must share a single ``camera_id``. Otherwise each image is a
+    distinct sensor, the rig degenerates into one rig per image, and the
+    constant-rig constraint has nothing to constrain.
+
+    Images are matched to rig cameras by their directory name, which Stage 2
+    lays out as ``<camera_name>/<frame>.png``.
+
+    Args:
+        database_path: COLMAP database to rewrite in place.
+
+    Returns:
+        Number of images whose camera assignment was changed.
+    """
+    try:
+        import pycolmap
+    except ImportError:
+        return 0
+
+    db = pycolmap.Database.open(database_path)
+    try:
+        # An image's data_id is derived from its camera_id, so reassigning the
+        # camera invalidates the existing frame rows. Clear them *before*
+        # reading images (the read-back objects carry frame state), then rebuild
+        # once the cameras are shared; the rig annotation step writes the real
+        # frames afterwards.
+        db.clear_frames()
+
+        images = db.read_all_images()
+        if not images:
+            return 0
+
+        # Group images by rig camera folder, in manifest order.
+        by_folder: dict[str, list] = {}
+        for image in images:
+            folder = Path(image.name).parent.name
+            by_folder.setdefault(folder, []).append(image)
+
+        if len(by_folder) >= len(images):
+            # Every image already has its own folder: not a panorama rig.
+            return 0
+
+        # Renumber to 1..N in folder order so the IDs match the panorama-rig
+        # manifest. The rig annotation builds its rig from the manifest's
+        # camera_ids, so any other numbering leaves the rig sensors pointing at
+        # cameras that no image uses.
+        ordered_folders = sorted(by_folder)
+        # Snapshot a representative camera record before renumbering, so the
+        # new IDs can be created with the same intrinsics.
+        template_camera = db.read_camera(int(images[0].camera_id))
+        changed = 0
+        for new_id, folder in enumerate(ordered_folders, start=1):
+            group = by_folder[folder]
+            if not db.exists_camera(new_id):
+                camera = pycolmap.Camera()
+                camera.camera_id = new_id
+                camera.model = template_camera.model
+                camera.width = template_camera.width
+                camera.height = template_camera.height
+                camera.params = list(template_camera.params)
+                db.write_camera(camera)
+            for image in group:
+                if int(image.camera_id) != new_id:
+                    image.camera_id = new_id
+                    db.update_image(image)
+                    changed += 1
+            logger.debug("Rig camera %s -> camera_id %d (%d images)", folder, new_id, len(group))
+
+        if changed:
+            logger.info(
+                "Shared camera records across %d rig camera(s): %d image(s) reassigned",
+                len(by_folder),
+                changed,
+            )
+        return changed
+    finally:
+        db.close()
+
+
+def _apply_stage2_intrinsics(database_path: Path, dataset_dir: Path) -> int:
+    """Write the exact Stage 2 intrinsics into the COLMAP database cameras.
+
+    Stage 2 renders every view itself, so its ``cameras.txt`` holds the true
+    pinhole intrinsics. Feature extraction does not know them: without a
+    ``camera_params`` hint COLMAP guesses ``f = 1.2 * max(width, height)``.
+    For the 105 deg panorama-rig views (fov 90 + overlap 15, 384 px) that is
+    f = 460.8 instead of 147.3, i.e. a 45 deg lens. With intrinsics held fixed
+    during mapping, the reconstruction then places structure ~2.4x too far
+    from the camera path (measured on the synthetic room).
+
+    Each database image is matched to its Stage 2 camera by name (falling back
+    to its rig folder), and its camera record is set to that camera's model and
+    parameters with ``has_prior_focal_length`` so the mapper trusts it.
+
+    Args:
+        database_path: COLMAP database (after feature extraction).
+        dataset_dir: Stage 2 dataset root containing ``cameras.txt`` and
+            ``images.txt``.
+
+    Returns:
+        Number of camera records updated (0 when Stage 2 intrinsics are
+        unavailable or pycolmap is missing).
+    """
+    from sphereforge.common.colmap_helpers import parse_cameras_txt, parse_images_txt
+
+    cameras_txt = Path(dataset_dir) / "cameras.txt"
+    images_txt = Path(dataset_dir) / "images.txt"
+    if not cameras_txt.exists() or not images_txt.exists():
+        logger.warning(
+            "No Stage 2 cameras.txt/images.txt in %s; COLMAP will guess the focal length",
+            dataset_dir,
+        )
+        return 0
+    try:
+        import pycolmap
+    except ImportError:
+        return 0
+
+    stage2_cameras = parse_cameras_txt(cameras_txt)
+    by_name: dict[str, int] = {}
+    by_folder: dict[str, int] = {}
+    for entry in parse_images_txt(images_txt).values():
+        name = str(entry["name"]).replace("\\", "/")
+        name = name[len("images/"):] if name.startswith("images/") else name
+        by_name[name] = int(entry["camera_id"])
+        by_folder.setdefault(Path(name).parent.as_posix(), int(entry["camera_id"]))
+
+    db = pycolmap.Database.open(database_path)
+    try:
+        targets: dict[int, int] = {}
+        for image in db.read_all_images():
+            name = str(image.name).replace("\\", "/")
+            stage2_id = by_name.get(name, by_folder.get(Path(name).parent.as_posix()))
+            if stage2_id is None or stage2_id not in stage2_cameras:
+                continue
+            previous = targets.setdefault(int(image.camera_id), stage2_id)
+            if previous != stage2_id:
+                logger.warning(
+                    "Database camera %d is shared by images of different Stage 2 cameras "
+                    "(%d, %d); keeping the first",
+                    int(image.camera_id),
+                    previous,
+                    stage2_id,
+                )
+        updated = 0
+        for camera_id, stage2_id in targets.items():
+            spec = stage2_cameras[stage2_id]
+            camera = db.read_camera(camera_id)
+            if (int(camera.width), int(camera.height)) != (int(spec["width"]), int(spec["height"])):
+                logger.warning(
+                    "Stage 2 camera %d is %dx%d but database camera %d is %dx%d; not updating",
+                    stage2_id, spec["width"], spec["height"],
+                    camera_id, camera.width, camera.height,
+                )
+                continue
+            before = list(camera.params)
+            camera.model = str(spec["model"])
+            camera.params = [float(v) for v in spec["params"]]
+            camera.has_prior_focal_length = True
+            db.update_camera(camera)
+            updated += 1
+            logger.debug("Camera %d intrinsics %s -> %s %s", camera_id, before, spec["model"],
+                         spec["params"])
+        if updated:
+            sample = stage2_cameras[next(iter(targets.values()))]
+            logger.info(
+                "Applied Stage 2 intrinsics to %d camera(s) (%s, params %s)",
+                updated,
+                sample["model"],
+                [round(float(v), 3) for v in sample["params"]],
+            )
+        return updated
+    finally:
+        db.close()
+
+
+def _prune_outlier_cameras(
+    sparse_dir: Path,
+    max_radius_factor: float = 3.0,
+) -> int:
+    """Remove cameras whose pose is inconsistent with the rest of the rig.
+
+    A panorama rig moves smoothly, so every camera should sit near the others.
+    A handful of mis-registered views can nevertheless be placed far outside the
+    captured volume; because Stage 5 projects depth through those poses, they
+    spray points across the scene and inflate every downstream scale estimate.
+
+    Cameras farther than ``max_radius_factor`` times the median distance from
+    the rig centroid are dropped. The sparse model is rewritten in place.
+
+    Args:
+        sparse_dir: Directory containing the sparse model (``0``, ``1``, ...).
+        max_radius_factor: Radii beyond this multiple of the median are outliers.
+
+    Returns:
+        Number of cameras removed.
+    """
+    try:
+        import pycolmap
+    except ImportError:
+        logger.debug("pycolmap unavailable; skipping camera outlier pruning")
+        return 0
+
+    model_dir = _select_sparse_model_dir(sparse_dir)
+    if model_dir is None:
+        return 0
+
+    try:
+        reconstruction = pycolmap.Reconstruction(str(model_dir))
+    except Exception as exc:
+        logger.warning("Could not read sparse model for camera pruning: %s", exc)
+        return 0
+
+    from sphereforge.stages.stage03_sfm.rigidity import camera_centre_from_pose
+
+    images = {img_id: img for img_id, img in reconstruction.images.items() if img.has_pose}
+    if len(images) < 4:
+        return 0
+
+    centers = {}
+    for img_id, img in images.items():
+        pose = img.cam_from_world
+        # pycolmap exposes this as a method in 4.x and a property in 3.x.
+        if callable(pose):
+            pose = pose()
+        # The optical centre is -R^T t. The raw translation differs between
+        # rig sensors that share a centre, so it cannot be used as a position.
+        centers[img_id] = camera_centre_from_pose(pose)
+    stacked = np.stack(list(centers.values()))
+    centroid = np.median(stacked, axis=0)
+    radii = np.linalg.norm(stacked - centroid, axis=1)
+    median_radius = float(np.median(radii))
+    if median_radius <= 0:
+        return 0
+
+    threshold = max_radius_factor * median_radius
+    outliers = [img_id for img_id, c in centers.items() if np.linalg.norm(c - centroid) > threshold]
+    if not outliers:
+        return 0
+
+    removed = 0
+    for img_id in outliers:
+        img = reconstruction.image(img_id)
+        frame_id = getattr(img, "frame_id", None)
+        try:
+            if frame_id is not None and hasattr(reconstruction, "deregister_frame"):
+                reconstruction.deregister_frame(frame_id)
+            else:
+                reconstruction.deregister_image(img_id)
+            removed += 1
+        except Exception as exc:
+            logger.debug("Could not deregister camera %s: %s", img_id, exc)
+    if removed == 0:
+        return 0
+    # Write only the binary model. Leaving a stale images.txt/cameras.txt
+    # alongside it is worse than useless: readers prefer the text files, so
+    # they would keep serving the cameras we just removed.
+    for stale in ("cameras.txt", "images.txt", "points3D.txt"):
+        stale_path = model_dir / stale
+        if stale_path.exists():
+            stale_path.unlink()
+    reconstruction.write(str(model_dir))
+    logger.info(
+        "Pruned %d mis-registered camera(s) beyond %.2f m (median radius %.2f m)",
+        removed,
+        threshold,
+        median_radius,
+    )
+    return removed
+
+
+def _select_sparse_model_dir(sparse_dir: Path) -> Path | None:
+    """Return the sparse sub-model with the most registered images."""
+    candidates = [p for p in sorted(sparse_dir.iterdir()) if p.is_dir()] if sparse_dir.exists() else []
+    if not candidates:
+        return sparse_dir if sparse_dir.exists() else None
+    best = None
+    best_count = -1
+    for candidate in candidates:
+        images_file = candidate / "images.bin"
+        if not images_file.exists():
+            images_file = candidate / "images.txt"
+            if not images_file.exists():
+                continue
+        try:
+            count = _count_registered_images(images_file)
+        except OSError:
+            continue
+        if count > best_count:
+            best, best_count = candidate, count
+    return best
+
+
+def _count_registered_images(path: Path) -> int:
+    """Count registered images in a COLMAP ``images.bin``/``images.txt`` file."""
+    if path.suffix == ".bin":
+        import struct
+
+        with path.open("rb") as handle:
+            return int(struct.unpack("<Q", handle.read(8))[0])
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            # Image lines start with an id; 2D-point lines are "x y id" triples.
+            if len(parts) >= 10 and parts[0].isdigit():
+                count += 1
+    return count
 
 
 def _list_stage03_input_images(image_dir: Path) -> list[str]:
@@ -114,11 +432,136 @@ def _effective_matcher_type(
     return matcher_type
 
 
+def _run_pycolmap_reconstruction(
+    *,
+    image_dir: Path,
+    database_path: Path,
+    sparse_dir: Path,
+    image_names: list[str] | None = None,
+    sequential_overlap: int | None = None,
+    matcher_type: str = "sequential",
+    skip_mapping: bool = False,
+) -> None:
+    """Run SfM entirely through pycolmap (no COLMAP CLI binary required).
+
+    This is the fallback backend for environments where the COLMAP command-line
+    tools are not installed but the ``pycolmap`` Python package is. It performs
+    the same three stages as the CLI path — feature extraction, feature
+    matching and incremental mapping — and writes a standard COLMAP sparse
+    model (``cameras.bin``/``images.bin``/``points3D.bin``) into *sparse_dir*.
+
+    Args:
+        image_dir: Directory of images (camera intrinsics come from the image
+            reader, matching the CLI ``feature_extractor`` behaviour).
+        database_path: COLMAP database to create/populate.
+        sparse_dir: Output directory for the sparse model (``sparse/0``).
+        image_names: Optional explicit image order (relative to *image_dir*).
+        sequential_overlap: Sequential matcher overlap. ``None`` uses pycolmap's
+            default.
+        matcher_type: ``"sequential"`` or ``"exhaustive"``.
+
+    Raises:
+        RuntimeError: If pycolmap is unavailable or the reconstruction fails.
+    """
+    try:
+        import pycolmap
+    except ImportError as exc:
+        raise RuntimeError(
+            "Stage 3 needs either the COLMAP CLI tools or the 'pycolmap' package. "
+            "Install one of them (pip install pycolmap)."
+        ) from exc
+
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    if database_path.exists():
+        database_path.unlink()
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "Running pycolmap SfM backend: images=%s, db=%s, matcher=%s",
+        image_dir,
+        database_path,
+        matcher_type,
+    )
+
+    reader_options = pycolmap.ImageReaderOptions()
+    # Large 360-derived views otherwise get downscaled, losing the fine
+    # texture that SIFT needs to link rig cameras to each other.
+    extraction_options = pycolmap.FeatureExtractionOptions()
+    extraction_options.max_image_size = 2048
+    extraction_options.sift.max_num_features = 16384
+    if _env_flag_enabled("SPHEREFORGE_COLMAP_USE_GPU"):
+        extraction_options.use_gpu = True
+    pycolmap.extract_features(
+        database_path=database_path,
+        image_path=image_dir,
+        image_names=list(image_names or []),
+        reader_options=reader_options,
+        extraction_options=extraction_options,
+    )
+
+    # ``extract_features`` creates a *new* camera per image. For a panorama rig
+    # that is fatal: every image gets a unique camera_id, so the rig ends up
+    # with one sensor per image, the rig constraint degenerates to "each image
+    # is its own rig", and nothing ties a panorama's faces together. Collapse
+    # images that share a rig camera onto a single camera record.
+    _share_cameras_across_rig_frames(database_path)
+    _apply_stage2_intrinsics(database_path, image_dir.parent)
+
+    matching_options = pycolmap.FeatureMatchingOptions()
+    matching_options.sift.max_ratio = 0.85
+    matching_options.sift.cross_check = False
+    if _env_flag_enabled("SPHEREFORGE_COLMAP_USE_GPU"):
+        matching_options.use_gpu = True
+
+    if matcher_type == "exhaustive":
+        pycolmap.match_exhaustive(database_path=database_path, matching_options=matching_options)
+    else:
+        pairing = pycolmap.SequentialPairingOptions()
+        if sequential_overlap is not None:
+            pairing.overlap = int(sequential_overlap)
+            pairing.quadratic_overlap = False
+        pycolmap.match_sequential(
+            database_path=database_path,
+            matching_options=matching_options,
+            pairing_options=pairing,
+        )
+
+    if skip_mapping:
+        # The panorama-rig backend applies its rig constraints (constant rigs
+        # and fixed sensor-from-rig transforms) during mapping. Mapping here
+        # would run an unconstrained reconstruction first, and the rig probe
+        # would then have nothing left to constrain.
+        logger.info("Skipping mapping; the panorama-rig backend will run it")
+        return
+
+    reconstructions = pycolmap.incremental_mapping(
+        database_path=database_path,
+        image_path=image_dir,
+        output_path=sparse_dir,
+    )
+    if not reconstructions:
+        raise RuntimeError(
+            "pycolmap incremental mapping produced no reconstruction. "
+            "The images may lack sufficient overlap or texture."
+        )
+
+    best_id = max(reconstructions, key=lambda k: reconstructions[k].num_reg_images())
+    best = reconstructions[best_id]
+    logger.info(
+        "pycolmap reconstruction %d: %d/%d images registered, %d points",
+        best_id,
+        best.num_reg_images(),
+        best.num_images(),
+        best.num_points3D(),
+    )
+
+
 def _run_panorama_rig_pycolmap_reconstruction(
     *,
     colmap_dataset_dir: Path,
     database_path: Path,
     output_dir: Path,
+    unconstrained_attempts: int = 3,
 ) -> None:
     """Run the optional pycolmap panorama-rig reconstruction backend."""
     pycolmap_python = os.environ.get(_PYCOLMAP_PYTHON_ENV, "").strip()
@@ -134,7 +577,8 @@ def _run_panorama_rig_pycolmap_reconstruction(
             "from pathlib import Path; "
             "from sphereforge.stages.stage03_sfm.pycolmap_probe import run_panorama_rig_pycolmap_probe; "
             f"run_panorama_rig_pycolmap_probe(colmap_dataset_dir=Path({str(colmap_dataset_dir)!r}), "
-            f"source_database_path=Path({str(database_path)!r}), output_dir=Path({str(output_dir)!r}))"
+            f"source_database_path=Path({str(database_path)!r}), output_dir=Path({str(output_dir)!r}), "
+            f"attempts={int(unconstrained_attempts)})"
         )
         logger.info("Running panorama-rig pycolmap backend via interpreter %s", pycolmap_python)
         result = subprocess.run(
@@ -163,7 +607,32 @@ def _run_panorama_rig_pycolmap_reconstruction(
         colmap_dataset_dir=colmap_dataset_dir,
         source_database_path=database_path,
         output_dir=output_dir,
+        attempts=unconstrained_attempts,
     )
+
+
+def _model_has_rig(sparse_dir: Path) -> bool:
+    """Check whether the sparse model still carries a multi-sensor rig.
+
+    The unconstrained fallback in the pycolmap probe produces ordinary
+    per-image cameras, for which the rigidity correction would be wrong.
+
+    Args:
+        sparse_dir: Directory holding the COLMAP sparse model(s).
+
+    Returns:
+        True when a rig with more than one sensor is present.
+    """
+    try:
+        import pycolmap
+
+        model_dir = _select_sparse_model_dir(Path(sparse_dir))
+        if model_dir is None:
+            return False
+        reconstruction = pycolmap.Reconstruction(str(model_dir))
+        return any(rig.num_sensors() > 1 for rig in reconstruction.rigs.values())
+    except Exception:  # absence of a rig is the safe default
+        return False
 
 
 def _build_stage03_image_list(image_dir: Path, panorama_rig_manifest: dict | None) -> list[str]:
@@ -476,6 +945,91 @@ def run_stage03(
     if config.dense_reconstruction:
         dense_dir.mkdir(parents=True, exist_ok=True)
 
+    # Backend selection: the COLMAP CLI is preferred when installed; otherwise
+    # fall back to the pycolmap Python package (same algorithms, no binary).
+    colmap_cli_available = shutil.which("colmap") is not None
+    panorama_rig_manifest = _load_panorama_rig_manifest(colmap_dataset_dir)
+    panorama_temporal_window = _effective_panorama_temporal_window(config, panorama_rig_manifest)
+    use_rig_pycolmap = _should_use_panorama_rig_pycolmap(config, panorama_rig_manifest)
+    use_pycolmap_fallback = not colmap_cli_available and not use_rig_pycolmap
+    if use_pycolmap_fallback:
+        logger.warning(
+            "COLMAP CLI not found on PATH; using the pycolmap Python backend "
+            "(feature extraction, sequential matching, incremental mapping)."
+        )
+
+    if use_pycolmap_fallback or (use_rig_pycolmap and not colmap_cli_available):
+        # Without the COLMAP binary the database must also be built by pycolmap;
+        # the rig-aware probe below only performs the reconstruction step.
+        image_names = _build_stage03_image_list(image_dir, panorama_rig_manifest)
+        effective_matcher = "exhaustive" if config.matcher_type == "exhaustive" else "sequential"
+        if use_rig_pycolmap:
+            logger.info(
+                "COLMAP CLI unavailable; building the rig database with pycolmap "
+                "(frame-major image order, overlap=%d)",
+                panorama_temporal_window,
+            )
+        _run_pycolmap_reconstruction(
+            image_dir=image_dir,
+            database_path=database_path,
+            sparse_dir=sparse_dir,
+            image_names=image_names,
+            sequential_overlap=(
+                panorama_temporal_window if panorama_rig_manifest is not None else None
+            ),
+            matcher_type=effective_matcher,
+            skip_mapping=use_rig_pycolmap,
+        )
+        if use_rig_pycolmap:
+            # The database now exists with shared cameras and matches; let the
+            # rig-aware probe run mapping with the rig constraints applied.
+            # Pass the already-built database as the source so the probe does
+            # not rebuild it (which would undo the shared camera assignment).
+            _run_panorama_rig_pycolmap_reconstruction(
+                colmap_dataset_dir=colmap_dataset_dir,
+                database_path=database_path,
+                output_dir=output_dir,
+            )
+        reconstruction_backend = "pycolmap_panorama_rig" if use_rig_pycolmap else "pycolmap"
+        # Check panorama-rig rigidity before anything reads the model. A
+        # rig-constrained model is rigid by construction (the check measures
+        # optical centres and normally repairs nothing); this guards against a
+        # model whose sensors were nevertheless placed at different centres.
+        # This must happen in this branch too: it returns before Step 5c below.
+        #
+        # Only apply it when the model still carries the rig. The unconstrained
+        # fallback (used only when the rig run collapsed to pure rotation) has
+        # one rig per image, so there is nothing to check.
+        if panorama_rig_manifest is not None and _model_has_rig(sparse_dir):
+            try:
+                from sphereforge.stages.stage03_sfm.rigidity import enforce_rig_rigidity
+
+                rig_model_dir = _select_sparse_model_dir(sparse_dir)
+                if rig_model_dir is not None:
+                    enforce_rig_rigidity(rig_model_dir)
+            except (ImportError, RuntimeError, ValueError, OSError) as exc:
+                logger.warning("Rig rigidity enforcement skipped: %s", exc)
+
+        sparse_model = read_sparse_model(sparse_dir)
+        _write_stage03_diagnostics(
+            image_dir,
+            sparse_dir,
+            output_dir,
+            sparse_model,
+            matcher_type=effective_matcher,
+            reconstruction_backend=reconstruction_backend,
+            panorama_temporal_window=(
+                panorama_temporal_window if panorama_rig_manifest is not None else None
+            ),
+        )
+        logger.info(
+            "Stage 3 complete (%s backend): %d images registered, %d points",
+            reconstruction_backend,
+            len(sparse_model.get("images", {})),
+            len(sparse_model.get("points3D", {})),
+        )
+        return sparse_model
+
     logger.info(
         "Starting Stage 3 SfM pipeline: dataset=%s, output=%s",
         colmap_dataset_dir,
@@ -515,6 +1069,8 @@ def run_stage03(
         single_camera_per_folder=panorama_rig_manifest is not None,
         image_list=image_list,
     )
+    # The CLI extractor has no focal hint either; give it Stage 2's exact lens.
+    _apply_stage2_intrinsics(database_path, colmap_dataset_dir)
 
     # Step 3: Feature matching
     logger.info("Step 3: Feature matching")
@@ -556,6 +1112,7 @@ def run_stage03(
             colmap_dataset_dir=colmap_dataset_dir,
             database_path=database_path,
             output_dir=output_dir,
+            unconstrained_attempts=max(1, int(config.unconstrained_attempts)),
         )
     else:
         logger.info("Step 4: Bundle adjustment")
@@ -600,6 +1157,21 @@ def run_stage03(
             f"minimum of {min_registration_fraction:.1%}. See {diagnostics['artifacts']['registration_report']}"
         )
 
+    # Step 5b: Drop mis-registered cameras
+    _prune_outlier_cameras(sparse_dir)
+
+    # Step 5c: Check panorama-rig rigidity (sensor optical centres per frame);
+    # repairs only frames whose sensors disagree about the shared centre.
+    if panorama_rig_manifest is not None:
+        try:
+            from sphereforge.stages.stage03_sfm.rigidity import enforce_rig_rigidity
+
+            model_dir = _select_sparse_model_dir(sparse_dir)
+            if model_dir is not None:
+                enforce_rig_rigidity(model_dir)
+        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+            logger.warning("Rig rigidity enforcement skipped: %s", exc)
+
     # Step 6: Optionally run dense reconstruction
     if config.dense_reconstruction:
         logger.info("Step 6: Dense reconstruction")
@@ -635,3 +1207,4 @@ def run_stage03(
         "points3D": sparse_model["points3D"],
         "diagnostics": diagnostics,
     }
+

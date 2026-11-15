@@ -6,6 +6,7 @@ assignment, and PLY writing to produce the initial Gaussian point cloud.
 
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -31,6 +32,64 @@ if TYPE_CHECKING:
     from sphereforge.config import Stage05Config
 
 logger = logging.getLogger("sphereforge.stage05.pipeline")
+
+
+def _load_panorama_rig_manifest(cubemap_dir: Path | None) -> dict | None:
+    """Load the Stage 2 panorama-rig manifest when present."""
+    if cubemap_dir is None:
+        return None
+    manifest_path = Path(cubemap_dir) / "panorama_rig.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not read panorama-rig manifest %s: %s", manifest_path, exc)
+        return None
+
+
+def _frame_pano_pose(
+    sparse_model: dict,
+    frame_path: Path,
+    panorama_rig_manifest: dict | None,
+) -> np.ndarray | None:
+    """Return the world-to-panorama 4x4 pose for an ERP frame, if known.
+
+    ``project_to_3d`` produces points in the *panorama's own* frame (the ERP
+    camera is the origin looking down -Z). To fuse frames into the COLMAP world
+    frame we need each panorama's pose. For panorama-rig datasets the pose is
+    recovered from the registered virtual cameras exactly as Stage 4 does it;
+    otherwise an image entry with the frame's own name is used.
+
+    Args:
+        sparse_model: Parsed COLMAP sparse model.
+        frame_path: Path to the ERP frame.
+        panorama_rig_manifest: Stage 2 rig manifest, or ``None``.
+
+    Returns:
+        A 4x4 world-to-panorama matrix, or ``None`` when the pose is unknown.
+    """
+    from sphereforge.stages.stage04_depth.depth_alignment import (
+        _build_camera_pose,
+        _build_panorama_pose_from_rig_image,
+        _find_image_entry,
+        _find_panorama_rig_frame_entries,
+    )
+
+    images = sparse_model.get("images", {})
+    if not images:
+        return None
+
+    if panorama_rig_manifest is not None:
+        entries = _find_panorama_rig_frame_entries(images, frame_path.name, panorama_rig_manifest)
+        if entries:
+            best_entry = max(entries, key=lambda e: len(e.get("point3D_ids", [])))
+            return _build_panorama_pose_from_rig_image(best_entry, panorama_rig_manifest)
+
+    entry = _find_image_entry(images, frame_path.name)
+    if entry is not None:
+        return _build_camera_pose(entry)
+    return None
 
 
 def _process_single_frame_stage05(
@@ -89,6 +148,7 @@ def run_stage05(
     scene_params: dict,
     output_dir: Path,
     num_workers: int = 1,
+    cubemap_dir: Path | None = None,
 ) -> Path:
     """Run Stage 5: Initial Gaussian Seeding.
 
@@ -159,10 +219,44 @@ def run_stage05(
         all_depths.append(per_point_depth)
 
     # ------------------------------------------------------------------
+    # Step 1b: Panorama frame -> COLMAP world frame
+    # ------------------------------------------------------------------
+    # ``project_to_3d`` returns points in each panorama's own frame. Without
+    # this transform every frame's cloud sits at the world origin and fusion
+    # averages unrelated surfaces together.
+    panorama_rig_manifest = _load_panorama_rig_manifest(cubemap_dir)
+    world_positions: list[np.ndarray] = []
+    poses_found = 0
+    for frame_path, positions in zip(frame_paths, all_positions, strict=True):
+        pose = _frame_pano_pose(sparse_model, frame_path, panorama_rig_manifest)
+        if pose is None:
+            logger.warning(
+                "No COLMAP pose for frame %s; keeping its points in panorama space",
+                frame_path.name,
+            )
+            world_positions.append(positions)
+            continue
+        poses_found += 1
+        homogeneous = np.hstack(
+            [positions.astype(np.float64), np.ones((positions.shape[0], 1), dtype=np.float64)]
+        )
+        world_positions.append((pose @ homogeneous.T).T[:, :3].astype(np.float32))
+    if poses_found:
+        logger.info(
+            "Transformed %d/%d frames into the COLMAP world frame",
+            poses_found,
+            len(frame_paths),
+        )
+    else:
+        logger.warning(
+            "No frame poses recovered; fusing in panorama space (single-frame scenes only)"
+        )
+
+    # ------------------------------------------------------------------
     # Step 2: Multi-view fusion
     # ------------------------------------------------------------------
     fused_positions, fused_colors, fused_confidence = fuse_multiview(
-        all_positions, all_colors, sparse_model
+        world_positions, all_colors, sparse_model
     )
 
     # ------------------------------------------------------------------
@@ -171,26 +265,46 @@ def run_stage05(
     deduped_positions, deduped_colors, deduped_confidence = deduplicate_gaussians(
         fused_positions, fused_colors, fused_confidence, config.dedup_distance
     )
-    deduped_depth = np.linalg.norm(deduped_positions, axis=1).astype(np.float32)
+    # Depth is measured from the panorama, so express positions in panorama
+    # space for sky removal and grazing-angle clipping.
+    if poses_found:
+        first_pose = _frame_pano_pose(sparse_model, frame_paths[0], panorama_rig_manifest)
+        if first_pose is not None:
+            rotation_inv = first_pose[:3, :3].T
+            translation = first_pose[:3, 3]
+            pano_positions = (
+                (deduped_positions.astype(np.float64) - translation) @ rotation_inv.T
+            ).astype(np.float32)
+        else:
+            pano_positions = deduped_positions
+    else:
+        pano_positions = deduped_positions
+    deduped_depth = np.linalg.norm(pano_positions, axis=1).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Step 4: Filtering
     # ------------------------------------------------------------------
     mask = np.ones(deduped_positions.shape[0], dtype=bool)
 
-    # 4a. Edge clipping (grazing angle)
-    camera_origins = _extract_camera_origins(sparse_model)
-    if camera_origins.shape[0] > 0:
-        edge_mask = clip_grazing_angles(
-            deduped_positions, camera_origins, config.grazing_angle
-        )
+    # 4a. Edge clipping (grazing angle) — evaluated in panorama space against
+    # the panorama origin, which is where the ERP rays actually originate.
+    if poses_found:
+        pano_origins = np.zeros((1, 3), dtype=np.float32)
+        edge_mask = clip_grazing_angles(pano_positions, pano_origins, config.grazing_angle)
         mask &= edge_mask
+    else:
+        camera_origins = _extract_camera_origins(sparse_model)
+        if camera_origins.shape[0] > 0:
+            edge_mask = clip_grazing_angles(
+                deduped_positions, camera_origins, config.grazing_angle
+            )
+            mask &= edge_mask
 
     # 4b. Sky removal
     sky_thresh = config.sky_threshold
     if sky_thresh == "auto" and scene_params.get("sky_depth") is not None:
         sky_thresh = scene_params["sky_depth"]
-    sky_mask = remove_sky(deduped_positions, deduped_depth, sky_thresh)
+    sky_mask = remove_sky(pano_positions, deduped_depth, sky_thresh)
     mask &= sky_mask
 
     # 4c. Outlier pruning

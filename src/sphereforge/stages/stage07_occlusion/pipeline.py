@@ -60,6 +60,25 @@ def run_stage07(
     n_original = gaussians["positions"].shape[0]
     logger.info("Loaded %d Gaussians", n_original)
 
+    # Stage 6 can hand over far more Gaussians than Stage 7 can afford: the
+    # diffusion pass and the differentiable rasterizer both hold full-resolution
+    # tensors, and a 386k-Gaussian input exhausted an 8 GB card. ``max_gaussians``
+    # only limited *growth* inside ShareGS, so cap the input here too, keeping
+    # the most opaque Gaussians (the ones that actually contribute to the image).
+    if config.max_gaussians > 0 and n_original > config.max_gaussians:
+        opacities = np.asarray(gaussians["opacities"], dtype=np.float32)
+        keep = np.argsort(-opacities)[: config.max_gaussians]
+        keep.sort()
+        gaussians = {
+            key: (value[keep] if value is not None else None)
+            for key, value in gaussians.items()
+        }
+        logger.info(
+            "Capped Stage 7 input to %d Gaussians (from %d, keeping the most opaque)",
+            config.max_gaussians,
+            n_original,
+        )
+
     # ---- 2. Compute scene bounds ----
     scene_center, scene_radius = _compute_scene_bounds(gaussians)
     logger.info(
@@ -114,7 +133,9 @@ def run_stage07(
         opacities=gaussians["opacities"],
         scales=gaussians["scales"],
         rotations=gaussians["rotations"],
-        sh_coeffs=sh_coeffs[:, 3:] if sh_coeffs is not None and sh_coeffs.shape[-1] == 48 else sh_coeffs,
+        # read_ply's sh_coeffs carries the DC term first; write_ply wants only
+        # the f_rest_* bands (9/24/45 wide for SH degree 1/2/3).
+        sh_coeffs=sh_coeffs[:, 3:] if sh_coeffs is not None and sh_coeffs.shape[-1] > 3 else None,
     )
 
     # ---- 7. Log completion ----
@@ -144,10 +165,29 @@ def _compute_scene_bounds(gaussians: dict) -> tuple[np.ndarray, float]:
         Tuple of (centre (3,), radius (float)).
     """
     positions = np.asarray(gaussians["positions"], dtype=np.float32)
-    p_min = positions.min(axis=0)
-    p_max = positions.max(axis=0)
-    scene_center = (p_min + p_max) / 2.0
-    scene_radius = float(np.max(np.linalg.norm(positions - scene_center, axis=1)))
+    # A handful of stray Gaussians (left over from depth outliers) can sit far
+    # outside the real scene. Using the farthest point would then place the
+    # novel cameras outside the captured volume, so nearly every pixel reads as
+    # a hole and Stage 7 fabricates hundreds of thousands of Gaussians.
+    # Weight by opacity so near-invisible floaters do not define the bounds.
+    opacities = gaussians.get("opacities")
+    if opacities is not None:
+        from sphereforge.common.gaussian_parameters import opacities_to_activated
+
+        weights = opacities_to_activated(np.asarray(opacities))
+        # Keep the Gaussians that actually contribute to the image.
+        keep = weights >= max(0.05, float(np.percentile(weights, 40)))
+        if int(np.sum(keep)) >= 8:
+            positions = positions[keep]
+
+    scene_center = np.median(positions, axis=0)
+    distances = np.linalg.norm(positions - scene_center, axis=1)
+    # Use a tight percentile. The novel cameras orbit at 0.5-1.5x this radius,
+    # so a radius inflated by a tail of stray Gaussians places cameras outside
+    # the captured volume; they then synthesise Gaussians beyond the walls and
+    # drag the whole reconstruction outward. The median distance is the
+    # distance to the walls themselves, which is what the cameras should orbit.
+    scene_radius = float(np.percentile(distances, 50))
     # Ensure a minimum radius to avoid degenerate cases
     scene_radius = max(scene_radius, 1e-3)
     return scene_center, scene_radius

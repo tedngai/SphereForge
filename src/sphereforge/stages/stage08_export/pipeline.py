@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from sphereforge.common.io import read_ply, write_ply
 
 if TYPE_CHECKING:
@@ -14,13 +16,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Scene-relative cap on Gaussian scale used when ``max_scale`` is "auto".
+# Typical Gaussians are a sizeable fraction of the scene extent (measured p50
+# 1.1 m against a 6.8 m extent), so a small ratio such as 0.1 rejects every
+# Gaussian and empties the export. 0.5 acts as an outlier filter only.
+AUTO_MAX_SCALE_RATIO = 0.5
+
+
 def _resolve_max_scale_ratio(max_scale: str) -> float:
     """Resolve Stage 8 max-scale config to a scene-relative ratio.
 
     Args:
-        max_scale: Config value. ``"auto"`` uses the same 10%-of-scene
-            heuristic as guarded Stage 6 pruning. Numeric strings are
-            interpreted directly as ratios.
+        max_scale: Config value. ``"auto"`` resolves to
+            :data:`AUTO_MAX_SCALE_RATIO`. Numeric strings are interpreted
+            directly as ratios.
 
     Returns:
         Positive scale ratio relative to scene extent.
@@ -29,7 +38,7 @@ def _resolve_max_scale_ratio(max_scale: str) -> float:
         ValueError: If the config value is unsupported or non-positive.
     """
     if max_scale == "auto":
-        return 0.1
+        return AUTO_MAX_SCALE_RATIO
 
     try:
         ratio = float(max_scale)
@@ -138,6 +147,23 @@ def run_stage08(
 
     stats["n_after"] = positions.shape[0]
 
+    # 3DGS PLY files store unit quaternions. Optimisation drifts them off the
+    # unit sphere (measured norms 0.58-1.62), which is not what the format
+    # specifies and which some viewers do not correct for. Normalise here so the
+    # exported file is standards-compliant.
+    if rotations is not None and len(rotations):
+        norms = np.linalg.norm(rotations, axis=1, keepdims=True)
+        degenerate = norms[:, 0] < 1e-8
+        if degenerate.any():
+            logger.warning(
+                "Normalising %d degenerate rotation quaternion(s) to identity",
+                int(degenerate.sum()),
+            )
+            rotations = np.array(rotations, dtype=np.float32, copy=True)
+            rotations[degenerate] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            norms = np.linalg.norm(rotations, axis=1, keepdims=True)
+        rotations = (rotations / np.maximum(norms, 1e-12)).astype(np.float32)
+
     # ---- Write final PLY (always) ----
     final_ply = output_dir / "final.ply"
     write_ply(
@@ -147,7 +173,8 @@ def run_stage08(
         opacities=opacities,
         scales=scales,
         rotations=rotations,
-        sh_coeffs=sh_coeffs,
+        # read_ply's sh_coeffs is DC + f_rest; write_ply takes only f_rest.
+        sh_coeffs=sh_coeffs[:, 3:] if sh_coeffs is not None and sh_coeffs.shape[-1] > 3 else None,
     )
     output_paths: dict[str, Path] = {"ply": final_ply}
     logger.info("Final PLY: %s (%d Gaussians)", final_ply, positions.shape[0])

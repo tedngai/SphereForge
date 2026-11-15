@@ -25,12 +25,16 @@ def prune_outliers(
     computed.  Points whose mean distance exceeds
     ``global_mean + strength * 3.0 * global_std`` are removed.
 
+    Distances are measured against the scene scale (the median neighbour
+    distance) rather than in absolute units, so the same *strength* behaves
+    identically for a tabletop scan and a room-scale scan.
+
     Args:
         positions: (N, 3) float32 Gaussian world-space positions.
         strength: Pruning strength in [0, 1].  Higher values remove
             more aggressively.  A strength of 0 keeps all points.
             The effective multiplier is ``strength * 3.0`` so that the
-            default (0.3) corresponds to a 0.9o threshold above the
+            default (0.3) corresponds to a 0.9-sigma threshold above the
             global mean.
 
     Returns:
@@ -50,6 +54,9 @@ def prune_outliers(
         )
         return np.ones(n, dtype=bool)
 
+    if strength <= 0:
+        return np.ones(n, dtype=bool)
+
     # Build KD-tree
     tree = cKDTree(positions)
 
@@ -65,6 +72,13 @@ def prune_outliers(
     # Threshold: mean + strength * factor * std
     factor = 3.0
     threshold = global_mean + strength * factor * global_std
+
+    # Scale-relative floor: a uniform random cloud has no outliers, yet its
+    # neighbour distances still have a non-zero spread, so a pure
+    # mean + c*std rule would always trim its tail. Only treat a point as an
+    # outlier when it is also far relative to the typical neighbour distance.
+    median_dist = float(np.median(mean_dists))
+    threshold = max(threshold, median_dist + strength * factor * median_dist)
 
     keep = mean_dists <= threshold
 

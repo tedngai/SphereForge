@@ -22,20 +22,24 @@ SPZ_VERSION = 1
 def _morton_code_3d(x: int, y: int, z: int) -> int:
     """Compute 3D Morton code (Z-order curve index) from integer coordinates.
 
+    Each coordinate may use up to 21 bits, so the code fits in 63 bits and
+    stays non-negative for ``int64`` arrays.
+
     Args:
-        x: X coordinate (non-negative integer).
-        y: Y coordinate (non-negative integer).
-        z: Z coordinate (non-negative integer).
+        x: X coordinate (non-negative integer, < 2**21).
+        y: Y coordinate (non-negative integer, < 2**21).
+        z: Z coordinate (non-negative integer, < 2**21).
 
     Returns:
         Morton code as integer.
     """
     def _split_by_1(n: int) -> int:
-        n = n & 0x000003FF
-        n = (n | (n << 16)) & 0x030000FF
-        n = (n | (n << 8)) & 0x0300F00F
-        n = (n | (n << 4)) & 0x030C30C3
-        n = (n | (n << 2)) & 0x09249249
+        n = n & 0x001FFFFF
+        n = (n | (n << 32)) & 0x001F00000000FFFF
+        n = (n | (n << 16)) & 0x001F0000FF0000FF
+        n = (n | (n << 8)) & 0x100F00F00F00F00F
+        n = (n | (n << 4)) & 0x10C30C30C30C30C3
+        n = (n | (n << 2)) & 0x1249249249249249
         return n
 
     return (_split_by_1(x) << 2) | (_split_by_1(y) << 1) | _split_by_1(z)

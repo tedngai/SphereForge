@@ -574,7 +574,13 @@ class EscherNetInpainter:
             return eschernet_repo
 
         logger.info("Cloning EscherNet repo to %s ...", eschernet_repo)
-        eschernet_repo.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            eschernet_repo.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"EscherNet cache directory is not writable: {eschernet_repo.parent} ({exc}). "
+                "Pass an explicit cache_dir or set SPHEREFORGE_CACHE_DIR to a writable path."
+            ) from exc
 
         import subprocess
         try:
@@ -624,15 +630,34 @@ class EscherNetInpainter:
         return weights_dir
 
     def _load_model(self) -> None:
-        """Load the EscherNet model. Lazily loads on first inference call."""
+        """Load the EscherNet model. Lazily loads on first inference call.
+
+        Raises:
+            ImportError: If the EscherNet code/weights cannot be obtained or
+                the required diffusers fork is not installed.
+        """
         if self._model is not None:
             return
 
-        import torch
+        try:
+            import torch
+        except ImportError as exc:
+            raise ImportError(
+                "EscherNet requires PyTorch. Install with: pip install torch"
+            ) from exc
 
-        # Ensure code and weights are available
-        repo_path = self._ensure_code_available()
-        weights_dir = self._ensure_weights_available()
+        # Ensure code and weights are available. Setup problems (unwritable
+        # cache, failed clone, missing weights) are reported as ImportError so
+        # that callers can treat "EscherNet is not set up" uniformly.
+        try:
+            repo_path = self._ensure_code_available()
+            weights_dir = self._ensure_weights_available()
+        except (RuntimeError, OSError) as exc:
+            raise ImportError(
+                f"Failed to set up EscherNet: {exc}\n"
+                f"Pass an explicit cache_dir or set SPHEREFORGE_CACHE_DIR to a "
+                f"writable location. See: https://github.com/kxhit/EscherNet"
+            ) from exc
 
         # Add EscherNet to Python path
         import sys

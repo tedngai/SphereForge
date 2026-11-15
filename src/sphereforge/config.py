@@ -66,6 +66,15 @@ class Stage02Config(BaseModel):
 class Stage03Config(BaseModel):
     """Stage 3: Multi-View SfM (COLMAP)."""
 
+    unconstrained_attempts: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "How many unconstrained mapping runs to try when the panorama-rig "
+            "constraint collapses the camera path. The mapper is not deterministic, "
+            "so the best-scoring reconstruction is kept. 1 disables the search."
+        ),
+    )
     feature_type: Literal["root_sift", "sift"] = Field(default="root_sift")
     matcher_type: Literal["sequential+vocabulary_tree", "exhaustive", "sequential"] = Field(
         default="sequential+vocabulary_tree"
@@ -108,6 +117,39 @@ class Stage04Config(BaseModel):
     depth_min: str = Field(default="auto", description="Clip near geometry")
     depth_max: str = Field(default="auto", description="Clip far geometry")
 
+    # Perspective model used by the DAP rig, Depth Anything V2, and RPG360 faces.
+    depth_model_size: Literal["small", "base", "large"] = Field(
+        default="small",
+        description="Perspective depth model size. 'small' (ViT-S) is Apache-2.0; "
+        "'base'/'large' are CC-BY-NC-4.0 (non-commercial).",
+    )
+    depth_device: str = Field(default="auto", description="'auto', 'cuda', 'cuda:1' or 'cpu'")
+    depth_half: bool = Field(
+        default=False, description="Run the perspective model in float16 on CUDA"
+    )
+    dap_erp_weights: Path | None = Field(
+        default=None,
+        description="Optional local directory with true ERP-native DAP weights "
+        "(HuggingFace AutoModelForDepthEstimation layout). When set, ERP frames "
+        "are fed directly to that model instead of rig-fusion.",
+    )
+    dap_yaw_steps: int = Field(
+        default=8, description="Yaw samples in the DAP panorama rig (per pitch ring)"
+    )
+    dap_pitches: list[float] = Field(
+        default_factory=lambda: [-90.0, -45.0, 0.0, 45.0, 90.0],
+        description=(
+            "Pitch angles (degrees) for the DAP panorama rig rings. Include the "
+            "poles: without them the nadir/zenith are only seen at grazing angles."
+        ),
+    )
+    dap_view_fov: float = Field(default=90.0, description="Field of view of each rig view")
+    dap_view_res: int = Field(default=512, description="Side length (px) of each rig view")
+    dap_max_depth: float = Field(
+        default=0.0,
+        description="Zero out fused depth above this value (relative units, 0 disables)",
+    )
+
     # RPG360-only fallback config
     rpg360_perspective_model: Literal["metric3d_v2", "depth_anything_v2", "omnidata_v2"] = Field(
         default="depth_anything_v2", description="Perspective model for RPG360 cubemap faces"
@@ -125,7 +167,11 @@ class Stage05Config(BaseModel):
     outlier_pruning: float = Field(default=0.3, description="Floater removal strength")
     sparse_pruning: float = Field(default=0.3, description="Isolated splat removal strength")
     sky_threshold: str = Field(default="auto")
-    dedup_distance: str = Field(default="auto", description="Based on local point density")
+    dedup_distance: str | float = Field(
+        default="auto",
+        description="Merge distance for duplicate Gaussians: 'auto' (based on local point "
+        "density) or an explicit distance in world units",
+    )
 
     # V2: Depth-inlier filtering
     ncc_confidence_threshold: float = Field(
@@ -150,6 +196,24 @@ class Stage06Config(BaseModel):
     # V2: ImprovedGS+ densification
     densification: Literal["igs_plus", "cdc_gs", "adc", "mcmc"] = Field(
         default="igs_plus", description="V2 default: ImprovedGS+"
+    )
+    densify_from_iter: int = Field(
+        default=500,
+        description="First iteration at which densification may run (3DGS default)",
+    )
+    densify_grad_threshold: float = Field(
+        default=0.0002,
+        description=(
+            "Densify Gaussians whose screen-space positional gradient (in pixels, "
+            "averaged over the views that saw them) exceeds this (3DGS default 2e-4)"
+        ),
+    )
+    densify_percent_dense: float = Field(
+        default=0.01,
+        description=(
+            "Gaussians larger than this fraction of the scene extent are split along "
+            "their long axis; smaller ones are cloned (3DGS default 0.01)"
+        ),
     )
 
     # V2: ErpGS distortion-aware loss
@@ -193,8 +257,14 @@ class Stage06Config(BaseModel):
         description="Prune Gaussians below this activated opacity",
     )
     prune_max_scale_ratio: float = Field(
-        default=0.1,
-        description="Prune Gaussians whose max scale exceeds scene_extent * ratio",
+        default=0.5,
+        description=(
+            "Prune Gaussians whose max scale exceeds scene_extent * ratio. This is "
+            "an outlier filter for floaters, not a detail filter: typical Gaussians "
+            "are a sizeable fraction of the scene extent (measured p50 = 1.1 m "
+            "against a 6.8 m extent), so a small ratio such as 0.1 rejects every "
+            "Gaussian and empties the export."
+        ),
     )
 
 
@@ -259,6 +329,15 @@ class Stage07Config(BaseModel):
     gsdiff_distill_iters: int = Field(
         default=100,
         description="Number of distillation iterations per novel camera",
+    )
+    gsdiff_max_cameras: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Maximum number of novel cameras to inpaint with the diffusion backend, "
+            "highest hole count first. Diffusion is the dominant cost of Stage 7; "
+            "0 means no limit."
+        ),
     )
     refine_rounds: int = Field(
         default=2, description="V2: reduced from 3 (ShareGS pre-pass handles easy gaps)"

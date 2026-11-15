@@ -2,18 +2,32 @@
 
 Provides utilities to download model weights on first use and cache them
 in a configurable directory (default: ~/.cache/sphereforge/models/).
+
+The location can be overridden with the ``SPHEREFORGE_CACHE_DIR`` environment
+variable, which is useful when the home directory is not writable (sandboxed
+runners, shared machines) or when the weights should live alongside the data.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sphereforge" / "models"
+
+def _default_cache_dir() -> Path:
+    """Resolve the cache root, honouring ``SPHEREFORGE_CACHE_DIR``."""
+    override = os.environ.get("SPHEREFORGE_CACHE_DIR")
+    if override:
+        return Path(override).expanduser() / "models"
+    return Path.home() / ".cache" / "sphereforge" / "models"
+
+
+DEFAULT_CACHE_DIR = _default_cache_dir()
 
 
 def get_model_path(

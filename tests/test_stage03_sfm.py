@@ -85,8 +85,9 @@ def _write_synthetic_binary_model(sparse_dir: Path) -> None:
     with open(sparse_dir / "cameras.bin", "wb") as f:
         f.write(struct.pack("<Q", 1))  # num_cameras
         f.write(struct.pack("<I", 1))  # camera_id
-        # model name "PINHOLE" + null terminator
-        f.write(b"PINHOLE\x00")
+        # COLMAP stores the camera model as a uint32 enum id, not as a name:
+        # 0=SIMPLE_PINHOLE, 1=PINHOLE, 2=SIMPLE_RADIAL, ...
+        f.write(struct.pack("<i", 1))  # model_id 1 == PINHOLE
         f.write(struct.pack("<Q", 1024))  # width
         f.write(struct.pack("<Q", 1024))  # height
         # 4 params for PINHOLE: fx fy cx cy
@@ -120,7 +121,7 @@ def _write_synthetic_binary_model(sparse_dir: Path) -> None:
 class TestFeatureExtractionCLI:
     """Tests for run_feature_extraction command construction."""
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value="/usr/bin/colmap")
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
     def test_basic_command_args(self, mock_run, mock_which, tmp_path: Path) -> None:
         """Verify the basic COLMAP feature_extractor command arguments."""
@@ -153,7 +154,7 @@ class TestFeatureExtractionCLI:
         root_sift_idx = cmd.index("--SiftExtraction.root_sift")
         assert cmd[root_sift_idx + 1] == "1"
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value="/usr/bin/colmap")
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
     def test_sift_sets_root_sift_zero(self, mock_run, mock_which, tmp_path: Path) -> None:
         """When feature_type='sift', --SiftExtraction.root_sift should be 0."""
@@ -173,7 +174,7 @@ class TestFeatureExtractionCLI:
         root_sift_idx = cmd.index("--SiftExtraction.root_sift")
         assert cmd[root_sift_idx + 1] == "0"
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value="/usr/bin/colmap")
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
     def test_mask_dir_adds_image_list(self, mock_run, mock_which, tmp_path: Path) -> None:
         """When mask_dir is provided, --image_list_path should be in command."""
@@ -198,7 +199,7 @@ class TestFeatureExtractionCLI:
         cmd = mock_run.call_args[0][0]
         assert "--image_list_path" in cmd
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value="/usr/bin/colmap")
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
     def test_single_camera_per_folder_flag(
         self, mock_run, mock_which, tmp_path: Path
@@ -222,7 +223,7 @@ class TestFeatureExtractionCLI:
         assert "--ImageReader.single_camera_per_folder" in cmd
         assert "--image_list_path" in cmd
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value=None)
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value=None)
     def test_colmap_not_found_raises(self, mock_which, tmp_path: Path) -> None:
         """Should raise RuntimeError when COLMAP is not on PATH."""
         with pytest.raises(RuntimeError, match="COLMAP is not installed"):
@@ -231,7 +232,7 @@ class TestFeatureExtractionCLI:
                 image_dir=tmp_path / "images",
             )
 
-    @patch("sphereforge.stages.stage03_sfm.feature_extraction.shutil.which", return_value="/usr/bin/colmap")
+    @patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value="/usr/bin/colmap")
     @patch("sphereforge.stages.stage03_sfm.feature_extraction.subprocess.run")
     def test_nonzero_exit_raises(self, mock_run, mock_which, tmp_path: Path) -> None:
         """Should raise RuntimeError when subprocess returns non-zero."""
@@ -670,6 +671,19 @@ class TestDenseReconstruction:
 
 class TestPipelineOrchestration:
     """Tests for run_stage03 call ordering and integration."""
+
+    @pytest.fixture(autouse=True)
+    def _force_colmap_cli_backend(self, monkeypatch):
+        """Pin the COLMAP-CLI orchestration path for this test class.
+
+        ``run_stage03`` falls back to the pycolmap Python backend when the
+        COLMAP binary is not on PATH, so these tests must not depend on what is
+        installed on the machine running them.
+        """
+        monkeypatch.setattr(
+            "sphereforge.stages.stage03_sfm.pipeline.shutil.which",
+            lambda name: "/usr/bin/colmap",
+        )
 
     def test_panorama_rig_image_list_is_frame_major(self, tmp_path: Path) -> None:
         """Panorama-rig ordering should interleave cameras at each frame index."""
@@ -1424,3 +1438,265 @@ class TestPipelineOrchestration:
 
         mock_ba.assert_called_once()
         mock_pycolmap.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# pycolmap CLI-free backend
+# ---------------------------------------------------------------------------
+
+
+class TestPycolmapFallbackBackend:
+    """Tests for the pycolmap backend used when the COLMAP CLI is absent."""
+
+    def test_falls_back_when_colmap_cli_missing(self, tmp_path: Path) -> None:
+        """run_stage03 should use pycolmap when no COLMAP binary is on PATH."""
+        dataset_dir = tmp_path / "dataset"
+        (dataset_dir / "images").mkdir(parents=True)
+        (dataset_dir / "images" / "img.png").write_bytes(b"a")
+
+        fake_model = {"cameras": {1: {"model": "PINHOLE"}}, "images": {}, "points3D": {}}
+        with (
+            patch("sphereforge.stages.stage03_sfm.pipeline.shutil.which", return_value=None),
+            patch(
+                "sphereforge.stages.stage03_sfm.pipeline._run_pycolmap_reconstruction"
+            ) as mock_pycolmap,
+            patch(
+                "sphereforge.stages.stage03_sfm.pipeline.read_sparse_model",
+                return_value=fake_model,
+            ),
+            patch("sphereforge.stages.stage03_sfm.pipeline._write_stage03_diagnostics"),
+            patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction") as mock_cli,
+        ):
+            result = run_stage03(
+                Stage03Config(dense_reconstruction=False, min_registration_fraction=0.0),
+                dataset_dir,
+                tmp_path / "output",
+            )
+
+        mock_pycolmap.assert_called_once()
+        # The CLI feature extractor must not run when the binary is missing.
+        mock_cli.assert_not_called()
+        assert result is fake_model
+
+    def test_uses_cli_when_available(self, tmp_path: Path) -> None:
+        """The COLMAP CLI path stays the default when the binary exists."""
+        dataset_dir = tmp_path / "dataset"
+        (dataset_dir / "images").mkdir(parents=True)
+        (dataset_dir / "images" / "img.png").write_bytes(b"a")
+
+        with (
+            patch(
+                "sphereforge.stages.stage03_sfm.pipeline.shutil.which",
+                return_value="/usr/bin/colmap",
+            ),
+            patch(
+                "sphereforge.stages.stage03_sfm.pipeline._run_pycolmap_reconstruction"
+            ) as mock_pycolmap,
+            patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_extraction"),
+            patch("sphereforge.stages.stage03_sfm.pipeline.run_feature_matching"),
+            patch("sphereforge.stages.stage03_sfm.pipeline.run_bundle_adjustment"),
+            patch(
+                "sphereforge.stages.stage03_sfm.pipeline.read_sparse_model",
+                return_value={"cameras": {}, "images": {}, "points3D": {}},
+            ),
+            patch("sphereforge.stages.stage03_sfm.pipeline._write_stage03_diagnostics"),
+        ):
+            run_stage03(
+                Stage03Config(dense_reconstruction=False, min_registration_fraction=0.0),
+                dataset_dir,
+                tmp_path / "output",
+            )
+
+        mock_pycolmap.assert_not_called()
+
+    def test_backend_raises_without_pycolmap(self, tmp_path: Path) -> None:
+        """A clear error is raised when neither backend is installed."""
+        import builtins
+
+        from sphereforge.stages.stage03_sfm.pipeline import _run_pycolmap_reconstruction
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "pycolmap":
+                raise ImportError("no pycolmap")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch("builtins.__import__", side_effect=fake_import),
+            pytest.raises(RuntimeError, match="pycolmap"),
+        ):
+            _run_pycolmap_reconstruction(
+                image_dir=tmp_path,
+                database_path=tmp_path / "db.db",
+                sparse_dir=tmp_path / "sparse",
+            )
+
+
+class TestBestSparseModelSelection:
+    """A COLMAP run can emit several sub-models; pick the largest one."""
+
+    def test_selects_model_with_most_points(self, tmp_path: Path) -> None:
+        """read_sparse_model(sparse/) must not blindly pick sparse/0."""
+        from sphereforge.stages.stage03_sfm.model_reader import read_sparse_model
+
+        sparse = tmp_path / "sparse"
+        _write_synthetic_binary_model(sparse / "0")
+        _write_synthetic_binary_model(sparse / "1")
+
+        # Give sub-model "1" many more points than "0".
+        with open(sparse / "1" / "points3D.bin", "wb") as f:
+            f.write(struct.pack("<Q", 50))  # num_points
+            for pid in range(1, 51):
+                f.write(struct.pack("<Q", pid))
+                f.write(struct.pack("<3d", float(pid), 0.0, 0.0))
+                f.write(struct.pack("<3B", 1, 2, 3))
+                f.write(struct.pack("<d", 0.1))
+                f.write(struct.pack("<Q", 0))
+
+        result = read_sparse_model(sparse)
+        assert len(result["points3D"]) == 50
+
+
+class TestReconstructionQuality:
+    """The quality summary must be computable and flag bad reconstructions."""
+
+    @staticmethod
+    def _model(camera_radius: float, point_radius: float = 1.0) -> dict:
+        """Build a model with cameras at *camera_radius* around the origin."""
+        images = {}
+        for i in range(4):
+            angle = 2 * np.pi * i / 4
+            # Identity rotation: camera centre is -t.
+            images[str(i + 1)] = {
+                "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0,
+                "tx": -camera_radius * np.cos(angle),
+                "ty": 0.0,
+                "tz": -camera_radius * np.sin(angle),
+            }
+        points = {}
+        for i in range(8):
+            angle = 2 * np.pi * i / 8
+            points[str(i + 1)] = {
+                "x": point_radius * np.cos(angle),
+                "y": 0.0,
+                "z": point_radius * np.sin(angle),
+            }
+        return {"images": images, "points3D": points}
+
+    def test_cameras_inside_scene_give_ratio_below_one(self) -> None:
+        """A healthy capture has the cameras inside the point cloud."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_quality
+
+        quality = _reconstruction_quality(self._model(camera_radius=0.2, point_radius=1.0))
+
+        assert quality["camera_to_point_radius"] < 1.0
+
+    def test_cameras_outside_scene_give_ratio_above_one(self) -> None:
+        """Cameras outside the geometry are flagged by a ratio above 1."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_quality
+
+        quality = _reconstruction_quality(self._model(camera_radius=4.0, point_radius=1.0))
+
+        assert quality["camera_to_point_radius"] > 1.0
+
+    def test_empty_model_returns_no_metrics(self) -> None:
+        """A model without points or images yields nothing to report."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_quality
+
+        assert _reconstruction_quality({"images": {}, "points3D": {}}) == {}
+
+
+class TestReconstructionScore:
+    """Attempts must be rankable so the best reconstruction can be kept."""
+
+    def test_cameras_inside_scores_higher_than_outside(self) -> None:
+        """A path inside the point cloud beats one outside it."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_score
+
+        good = {"camera_to_point_radius": 0.4, "sparse_point_count": 8000, "registered_images": 144}
+        bad = {"camera_to_point_radius": 4.5, "sparse_point_count": 8000, "registered_images": 144}
+
+        assert _reconstruction_score(good) > _reconstruction_score(bad)
+
+    def test_more_registered_images_scores_higher(self) -> None:
+        """Registering more images is better, all else equal."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_score
+
+        more = {"camera_to_point_radius": 0.5, "sparse_point_count": 5000, "registered_images": 144}
+        fewer = {"camera_to_point_radius": 0.5, "sparse_point_count": 5000, "registered_images": 40}
+
+        assert _reconstruction_score(more) > _reconstruction_score(fewer)
+
+    def test_empty_quality_scores_zero(self) -> None:
+        """An unusable model scores zero so it is never selected."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_score
+
+        assert _reconstruction_score({}) == 0.0
+
+    def test_non_finite_ratio_scores_zero(self) -> None:
+        """A non-finite radius ratio must not win by accident."""
+        from sphereforge.stages.stage03_sfm.pycolmap_probe import _reconstruction_score
+
+        assert _reconstruction_score({"camera_to_point_radius": float("nan")}) == 0.0
+
+
+class TestStage2Intrinsics:
+    """Stage 3 must use the lens Stage 2 rendered, not COLMAP's focal guess."""
+
+    @staticmethod
+    def _write_stage2(dataset: Path) -> None:
+        dataset.mkdir(parents=True, exist_ok=True)
+        (dataset / "cameras.txt").write_text(
+            "# cameras\n"
+            "1 PINHOLE 384 384 147.3 147.3 192.0 192.0\n"
+            "2 PINHOLE 384 384 147.3 147.3 192.0 192.0\n",
+            encoding="utf-8",
+        )
+        (dataset / "images.txt").write_text(
+            "# images\n"
+            "1 1 0 0 0 0 0 0 1 images/pano_camera00/frame_000001.png\n\n"
+            "2 1 0 0 0 0 0 0 2 images/pano_camera01/frame_000001.png\n\n",
+            encoding="utf-8",
+        )
+
+    def test_default_focal_guess_is_replaced(self, tmp_path) -> None:
+        """A 1.2*width SIMPLE_RADIAL guess becomes the exact Stage 2 PINHOLE."""
+        pycolmap = pytest.importorskip("pycolmap")
+        from sphereforge.stages.stage03_sfm.pipeline import _apply_stage2_intrinsics
+
+        dataset = tmp_path / "cubemaps"
+        self._write_stage2(dataset)
+        db_path = tmp_path / "database.db"
+        db = pycolmap.Database.open(str(db_path))
+        for cam_id in (1, 2):
+            cam = pycolmap.Camera()
+            cam.camera_id = cam_id
+            cam.model = "SIMPLE_RADIAL"
+            cam.width = 384
+            cam.height = 384
+            cam.params = [460.8, 192.0, 192.0, 0.0]
+            db.write_camera(cam)
+        # Database names are relative to the image dir (no "images/" prefix);
+        # the frame_000003 image is matched via its rig folder.
+        db.write_image(pycolmap.Image(name="pano_camera00/frame_000001.png", camera_id=1))
+        db.write_image(pycolmap.Image(name="pano_camera01/frame_000003.png", camera_id=2))
+        db.close()
+
+        assert _apply_stage2_intrinsics(db_path, dataset) == 2
+
+        db = pycolmap.Database.open(str(db_path))
+        try:
+            for cam_id in (1, 2):
+                cam = db.read_camera(cam_id)
+                assert str(cam.model).endswith("PINHOLE")
+                assert list(cam.params) == pytest.approx([147.3, 147.3, 192.0, 192.0])
+                assert cam.has_prior_focal_length
+        finally:
+            db.close()
+
+    def test_missing_stage2_files_is_a_no_op(self, tmp_path) -> None:
+        """Without Stage 2 intrinsics nothing is changed."""
+        from sphereforge.stages.stage03_sfm.pipeline import _apply_stage2_intrinsics
+
+        assert _apply_stage2_intrinsics(tmp_path / "missing.db", tmp_path / "nothing") == 0

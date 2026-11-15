@@ -47,9 +47,13 @@ def clip_grazing_angles(
     # Scene centre = centroid of all positions
     scene_center = positions.mean(axis=0)
 
-    # Approximate surface normal: direction from scene centre to point
+    # Approximate surface normal: direction from scene centre to point.
+    # At the scene centre itself this is undefined (zero vector); such points
+    # are viewed head-on by construction, so give them an "unknown" normal
+    # that is never rejected on its own.
     normal_dirs = positions - scene_center  # (N, 3)
     normal_norms = np.linalg.norm(normal_dirs, axis=1, keepdims=True)
+    degenerate = normal_norms[:, 0] <= 1e-10
     safe_norms = np.where(normal_norms > 1e-10, normal_norms, 1.0)
     normal_dirs = normal_dirs / safe_norms  # (N, 3) unit vectors
 
@@ -74,7 +78,7 @@ def clip_grazing_angles(
 
         # Keep if cos(angle) >= cos(threshold), i.e., angle <= threshold
         # cos_angle can be negative (viewing from behind) — those are grazing
-        keep |= cos_angle >= cos_threshold
+        keep |= (cos_angle >= cos_threshold) | degenerate
 
     n_removed = int(np.sum(~keep))
     logger.info(
