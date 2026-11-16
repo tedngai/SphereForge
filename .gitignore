@@ -33,6 +33,7 @@ ENV/
 
 # Testing
 .pytest_cache/
+/pytest-of-*/
 .coverage
 htmlcov/
 .mypy_cache/
@@ -48,6 +49,7 @@ htmlcov/
 *.bin
 .cache/
 .hf-cache/
+/.sf-cache/
 .uv-cache/
 *.ckpt
 

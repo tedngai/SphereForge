@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -70,8 +69,8 @@ class TestAverageRotations:
         assert np.allclose(_average_rotations([rot, rot, rot]), rot, atol=1e-9)
 
 
-def _copy_source_model(tmp_path: Path) -> Path:
-    """Copy a rig-bearing Stage 3 model into *tmp_path* and return its directory.
+def _build_rig_model(root: Path) -> Path:
+    """Build a rig-bearing reconstruction under *root* and return its directory.
 
     pycolmap enforces strong invariants on ``Reconstruction`` (frames must own
     their data ids, images must be registered), so a hand-assembled model does
@@ -79,27 +78,9 @@ def _copy_source_model(tmp_path: Path) -> Path:
     the mapper produced from the rig database. Mapping takes minutes, so the
     result is built once per session and copied from there.
     """
-    cached = _session_rig_model()
-    out = tmp_path / "sparse" / "0"
-    out.mkdir(parents=True)
-    for item in cached.iterdir():
-        if item.is_file():
-            shutil.copy2(item, out / item.name)
-    return out
-
-
-_RIG_MODEL_CACHE: Path | None = None
-
-
-def _session_rig_model() -> Path:
-    """Build (once) a rig-bearing reconstruction and return its directory."""
-    global _RIG_MODEL_CACHE
-    if _RIG_MODEL_CACHE is not None and _RIG_MODEL_CACHE.exists():
-        return _RIG_MODEL_CACHE
     if not _RIG_DATABASE.exists() or not _RIG_IMAGES.is_dir():
         pytest.skip("no Stage 2 rig database available to build a fixture from")
 
-    root = Path(tempfile.mkdtemp(prefix="sphereforge-rig-fixture-"))
     options = pycolmap.IncrementalPipelineOptions()
     options.multiple_models = False
     options.min_model_size = 2
@@ -118,24 +99,38 @@ def _session_rig_model() -> Path:
     if not reconstructions:
         pytest.skip("mapper produced no reconstruction for the fixture")
     best_id = max(reconstructions, key=lambda k: len(reconstructions[k].images))
-    model_dir = root / str(best_id)
     if not any(rig.num_sensors() > 1 for rig in reconstructions[best_id].rigs.values()):
         pytest.skip("mapper did not produce a multi-sensor rig")
-    _RIG_MODEL_CACHE = model_dir
-    return model_dir
+    return root / str(best_id)
+
+
+@pytest.fixture(scope="session")
+def session_rig_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Map the rig database once per session into pytest's managed temp dir."""
+    return _build_rig_model(tmp_path_factory.mktemp("sphereforge-rig-fixture"))
+
+
+@pytest.fixture
+def model_dir(tmp_path: Path, session_rig_model: Path) -> Path:
+    """A per-test copy of the session's rig-bearing model."""
+    out = tmp_path / "sparse" / "0"
+    out.mkdir(parents=True)
+    for item in session_rig_model.iterdir():
+        if item.is_file():
+            shutil.copy2(item, out / item.name)
+    return out
 
 
 @pytest.mark.slow
 class TestEnforceRigRigidity:
     """A rig-constrained model is rigid by construction; the check must see that."""
 
-    def test_mapped_rig_model_is_already_rigid(self, tmp_path) -> None:
+    def test_mapped_rig_model_is_already_rigid(self, model_dir) -> None:
         """Optical centres of a frame coincide, so nothing is repaired.
 
         (The old check compared raw translations, which differ per sensor, and
         "repaired" every frame of a correct model into wrong poses.)
         """
-        model_dir = _copy_source_model(tmp_path)
 
         summary = enforce_rig_rigidity(model_dir)
 
@@ -143,20 +138,18 @@ class TestEnforceRigRigidity:
         assert summary["max_spread_before"] < 1e-6
         assert not (model_dir / _SIDECAR_NAME).exists()
 
-    def test_stale_sidecar_is_removed(self, tmp_path) -> None:
+    def test_stale_sidecar_is_removed(self, model_dir) -> None:
         """A sidecar left by an older (buggy) run must not override good poses."""
-        model_dir = _copy_source_model(tmp_path)
         (model_dir / _SIDECAR_NAME).write_text('{"x": {}}', encoding="utf-8")
 
         enforce_rig_rigidity(model_dir)
 
         assert not (model_dir / _SIDECAR_NAME).exists()
 
-    def test_mapped_rig_path_is_not_degenerate(self, tmp_path) -> None:
+    def test_mapped_rig_path_is_not_degenerate(self, model_dir) -> None:
         """The rig model's camera path must not be mistaken for a collapse."""
         from sphereforge.stages.stage03_sfm.pycolmap_probe import _camera_path_is_degenerate
 
-        model_dir = _copy_source_model(tmp_path)
         assert _camera_path_is_degenerate(model_dir) is False
 
 
